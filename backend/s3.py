@@ -24,6 +24,7 @@ here fails, imaging.py falls back to IRSA.
 
 import io
 import re
+import threading
 import time
 import warnings
 from datetime import datetime, timezone
@@ -43,11 +44,19 @@ ZODI_ROW_STEP = 16             # the sky-glow model is smooth: sample rows, inte
 
 _session = requests.Session()
 _session.headers["User-Agent"] = "spherex-blink-viewer"
-_session.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=32))
+# Room to keep every parallel request's connection open and reuse it, instead of
+# opening (and TLS-handshaking) new ones in bursts, which S3 sometimes times out.
+_session.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=64))
 _pool = ThreadPoolExecutor(16)       # the four pieces of each exposure
 # Row downloads get their own pool: they are started from inside _pool tasks,
 # and sharing one pool could leave every worker waiting on queued rows.
 _row_pool = ThreadPoolExecutor(32)
+
+
+# At most this many exposures read from S3 at once, across the whole server.
+# Each exposure is ~30 small requests; letting several big stacks run fully in
+# parallel opened hundreds of connections and S3 started dropping them.
+_exposure_slots = threading.BoundedSemaphore(8)
 
 
 class NoOverlap(Exception):
@@ -66,6 +75,11 @@ def read_cutout(irsa_url: str, ra: float, dec: float, width_deg: float) -> dict:
     removed, bad pixels NaN), grid (its coordinate system), wavelength_um,
     bandwidth_um.
     """
+    with _exposure_slots:
+        return _read_cutout(irsa_url, ra, dec, width_deg)
+
+
+def _read_cutout(irsa_url: str, ra: float, dec: float, width_deg: float) -> dict:
     url = s3_url(irsa_url)
     hdus = _walk_headers(url)
     image_header, image_start = hdus["IMAGE"]

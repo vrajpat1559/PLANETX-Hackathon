@@ -15,12 +15,18 @@ Run from the repo root:   uvicorn backend.main:app --reload
 from datetime import datetime, timezone
 
 import numpy as np
+from astropy import log as astropy_log
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import archive, config, imaging, s3, spherex, targets, wise
 from .visits import describe_visit, group_into_visits
+
+# astropy prints a long "Inconsistent SIP distortion" notice for every SPHEREx
+# file (the files use distortion terms without labelling them in CTYPE; astropy
+# applies them correctly anyway). Hide INFO-level notices so the log stays readable.
+astropy_log.setLevel("WARNING")
 
 app = FastAPI(title="SPHEREx Blink")
 
@@ -33,6 +39,21 @@ FovParam = Query(
     le=config.MAX_FOV_DEG,
     description="Field of view (width of the picture), degrees",
 )
+
+
+@app.middleware("http")
+async def always_fresh_page_files(request, call_next):
+    """Make browsers check for a newer index.html / JS / CSS on every load.
+
+    Without this, a browser may keep running an old copy of the page code after
+    it has been edited. "no-cache" still lets the browser keep a copy; it just
+    asks first, and an unchanged file costs a tiny "304 Not Modified" reply.
+    Images from /api/ keep their own long cache time.
+    """
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.exception_handler(archive.ArchiveError)

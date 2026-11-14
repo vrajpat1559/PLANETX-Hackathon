@@ -21,6 +21,7 @@ const PRESETS = [
   { label: "R Draconis", target: "R Dra" },
 ];
 const EXPOSURES_LOADED_AT_ONCE = 3;
+const VISITS_LOADED_AT_ONCE = 3;
 const WISE_MOMENTS_IN_SHORT_HISTORY = 5;
 const WISE_WAVELENGTH = { W1: "3.4 µm", W2: "4.6 µm" };
 
@@ -42,6 +43,7 @@ const state = {
   noise: null,        // sky noise of the first frame; every frame is drawn against it
   timer: null,        // play interval
   loadId: 0,          // goes up on every reload so slow old loads are ignored
+  loader: null,       // the load in progress: { loadId, queue, total, finished, running, limit }
 };
 
 const readyFrames = () => state.frames.filter((frame) => frame.status === "ready");
@@ -69,13 +71,14 @@ async function openTarget(target) {
   $("note").hidden = !target.note;
 
   setStatus(`Searching the archive at RA ${target.ra.toFixed(4)}°, Dec ${target.dec.toFixed(4)}°…`);
-  const [found, wiseVisits] = await Promise.all([
-    api.observations(target.ra, target.dec),
-    api.wiseVisits(target.ra, target.dec).catch(() => []), // history is a bonus; carry on without it
-  ]);
+  // The WISE history search is slow (IRSA), so SPHEREx images start loading
+  // without waiting for it; WISE images join the timeline when it answers.
+  const wiseSearch = api.wiseVisits(target.ra, target.dec).catch(() => []); // history is a bonus
+  const found = await api.observations(target.ra, target.dec);
+  if (state.target !== target) return; // the visitor already picked something else
   state.visits = found.visits;
   state.exposures = found.exposures;
-  state.wiseVisits = wiseVisits;
+  state.wiseVisits = [];
 
   if (!state.exposures.length) {
     state.frames = [];
@@ -84,6 +87,11 @@ async function openTarget(target) {
     return;
   }
   load();
+
+  const wiseVisits = await wiseSearch;
+  if (state.target !== target) return;
+  state.wiseVisits = wiseVisits;
+  addHistory();
 }
 
 // ---------- building the list of frames ----------
@@ -162,16 +170,14 @@ function spreadOut(list, limit) {
 function load() {
   stop();
   const loadId = ++state.loadId;
-  const stillCurrent = () => loadId === state.loadId;
   const detector = $("detector").value;
   const byVisit = $("mode").value === "visits";
   $("limit-label").hidden = byVisit;
   writeAddressBar();
 
   const fromSpherex = byVisit ? visitFrames(detector) : exposureFrames(detector);
-  const fromWise = historyFrames(detector);
+  const fromWise = historyFrames(detector); // empty until the WISE search has answered
   state.frames = [...fromWise, ...fromSpherex];  // shown oldest first
-  const queue = [...fromSpherex, ...fromWise];   // but SPHEREx is fetched first
   state.current = state.frames.indexOf(fromSpherex[0]);
   state.noise = null;
   drawTimeline(state.frames, state.current, pick);
@@ -182,47 +188,79 @@ function load() {
     return;
   }
 
-  const total = queue.length;
-  let finished = 0;
-  const report = () => {
-    const done = finished === total;
-    setStatus(
-      `${state.target.label}: loaded ${finished} of ${total} images.` +
-      (done ? "" : " An image that has not been requested before takes about 20 seconds.")
-    );
+  // Several images load at once. SPHEREx comes from Amazon S3, which has no
+  // connection limit; the server itself keeps IRSA (WISE) requests to a safe number.
+  state.loader = {
+    loadId,
+    queue: [],
+    total: 0,
+    finished: 0,
+    running: 0,
+    limit: byVisit ? VISITS_LOADED_AT_ONCE : EXPOSURES_LOADED_AT_ONCE,
   };
-  report();
+  enqueue([...fromSpherex, ...fromWise]); // SPHEREx is fetched first
+}
 
-  const worker = async () => {
-    while (queue.length && stillCurrent()) {
-      const frame = queue.shift();
-      try {
-        const image = await frame.fetch();
-        if (!stillCurrent()) return;
-        frame.pixels = image.pixels;
-        frame.size = image.size;
-        if (image.wavelength) frame.detail = `${image.wavelength.toFixed(2)} µm at the target`;
-        frame.status = "ready";
-        state.noise ??= noiseLevel(image.pixels);
-      } catch {
-        if (!stillCurrent()) return;
-        frame.status = "failed";
-      }
-      finished++;
-      report();
-      drawTimeline(state.frames, state.current, pick);
-      afterFrameArrives();
+// WISE history arrived after loading started: put it at the start of the timeline.
+function addHistory() {
+  if (!state.loader || state.frames.some((frame) => frame.telescope === "wise")) return;
+  const fromWise = historyFrames($("detector").value);
+  if (!fromWise.length) return;
+  const showing = state.frames[state.current];
+  state.frames = [...fromWise, ...state.frames];
+  state.current = state.frames.indexOf(showing);
+  drawTimeline(state.frames, state.current, pick);
+  enqueue(fromWise);
+}
+
+// Add frames to the current load and start workers for them.
+function enqueue(frames) {
+  const loader = state.loader;
+  loader.queue.push(...frames);
+  loader.total += frames.length;
+  reportProgress();
+  while (loader.running < loader.limit && loader.running < loader.queue.length) {
+    loader.running++;
+    loadWorker(loader);
+  }
+}
+
+async function loadWorker(loader) {
+  const stillCurrent = () => loader.loadId === state.loadId;
+  while (loader.queue.length && stillCurrent()) {
+    const frame = loader.queue.shift();
+    try {
+      const image = await frame.fetch();
+      if (!stillCurrent()) return;
+      frame.pixels = image.pixels;
+      frame.size = image.size;
+      if (image.wavelength) frame.detail = `${image.wavelength.toFixed(2)} µm at the target`;
+      frame.status = "ready";
+      state.noise ??= noiseLevel(image.pixels);
+    } catch {
+      if (!stillCurrent()) return;
+      frame.status = "failed";
     }
-  };
-  // Combined images go one at a time: each already uses every archive connection we allow.
-  const workers = byVisit ? 1 : EXPOSURES_LOADED_AT_ONCE;
-  for (let i = 0; i < workers; i++) worker();
+    loader.finished++;
+    reportProgress();
+    drawTimeline(state.frames, state.current, pick);
+    afterFrameArrives();
+  }
+  loader.running--;
+}
+
+function reportProgress() {
+  const { finished, total } = state.loader;
+  setStatus(
+    `${state.target.label}: loaded ${finished} of ${total} images.` +
+    (finished === total ? "" : " New images take a few seconds; older WISE images can take longer.")
+  );
 }
 
 function afterFrameArrives() {
   const ready = readyFrames();
   if (ready.length === 1) show(state.frames.indexOf(ready[0]));      // first picture: show it
-  else if (ready.length === 2 && !state.timer) play();               // second: start the movie
+  // No autoplay: flipping only starts when the visitor presses Play (or space).
   else if ($("view-mode").value !== "image") show(state.current);    // these views depend on other frames
 }
 
