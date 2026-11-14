@@ -9,7 +9,7 @@
 
 import { api } from "./api.js";
 import { average, noiseLevel, paintDifference, paintHighlights, paintImage } from "./picture.js";
-import { drawStarfield } from "./starfield.js";
+import { drawBackground } from "./blackhole.js";
 import { drawTimeline, markCurrent } from "./timeline.js";
 
 // The targets named in the challenge.
@@ -396,9 +396,9 @@ function readAddressBar() {
 // ---------- wiring ----------
 
 async function start() {
-  drawStarfield($("starfield"));
+  drawBackground($("starfield"));
   window.addEventListener("resize", () => {
-    drawStarfield($("starfield"));
+    drawBackground($("starfield"));
     if (state.frames.length) drawScaleBar();
   });
 
