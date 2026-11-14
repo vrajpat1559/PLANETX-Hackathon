@@ -3,6 +3,7 @@
 This file only defines the web addresses (routes). The real work lives in:
   targets.py   what the user typed  ->  a sky position
   archive.py   searching and downloading from IRSA
+  s3.py        fast SPHEREx pixel reads from Amazon S3, and the release listing
   spherex.py   SPHEREx: its exposure list and file format
   wise.py      WISE: 2010-2024 history from an older telescope
   visits.py    grouping exposures into visits
@@ -11,12 +12,14 @@ This file only defines the web addresses (routes). The real work lives in:
 Run from the repo root:   uvicorn backend.main:app --reload
 """
 
+from datetime import datetime, timezone
+
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import archive, config, imaging, spherex, targets, wise
+from . import archive, config, imaging, s3, spherex, targets, wise
 from .visits import describe_visit, group_into_visits
 
 app = FastAPI(title="SPHEREx Blink")
@@ -41,7 +44,7 @@ def archive_unavailable(request, error):
 def get_config():
     """What the frontend needs to know to build its menus."""
     return {
-        "collection": config.COLLECTION,
+        "spherex_search": spherex.search_filter(),
         "detectors": {
             name: {"min_um": low, "max_um": high, "wise_band": wise.band_for_detector(name)}
             for name, (low, high) in config.DETECTORS.items()
@@ -67,21 +70,47 @@ def resolve(q: str = Query(min_length=1, max_length=80)):
 
 
 @app.get("/api/observations")
-def observations(ra: float = RaParam, dec: float = DecParam):
-    """Everything SPHEREx has at this position: the visits, and each exposure."""
-    visits = group_into_visits(spherex.find_exposures(ra, dec))
+def observations(ra: float = RaParam, dec: float = DecParam, refresh: bool = False):
+    """Everything SPHEREx has at this position: the visits, and each exposure.
+
+    `refresh=true` asks the archive again right now instead of reusing an
+    answer from the last few hours (handy for showing brand-new data).
+    """
+    exposures_found = spherex.find_exposures(ra, dec, max_age_hours=0 if refresh else None)
+    visits = group_into_visits(exposures_found)
     exposures = [
         {**exposure, "visit": index}
         for index, visit in enumerate(visits)
         for exposure in visit
     ]
+    checked = archive.searched_at(spherex.search_filter(), ra, dec)
     return {
         "ra": ra,
         "dec": dec,
-        "collection": config.COLLECTION,
+        # Which releases these images came from, e.g. ["spherex_dr1", "spherex_qr3"].
+        "collections": sorted({e["collection"] for e in exposures_found if e["collection"]}),
+        "newest": exposures_found[-1]["date"] if exposures_found else None,
+        "checked": _iso(checked) if checked else None,
         "visits": [describe_visit(index, visit) for index, visit in enumerate(visits)],
         "exposures": exposures,
     }
+
+
+@app.get("/api/latest")
+def latest():
+    """How current NASA's SPHEREx archive is, for a "data current as of" label.
+
+    Read from the public S3 bucket's folder listing (no load on IRSA), and
+    remembered for an hour.
+    """
+    try:
+        return s3.latest_release()
+    except Exception as error:
+        raise HTTPException(502, f"Could not read the archive listing ({type(error).__name__})")
+
+
+def _iso(unix_time: float) -> str:
+    return datetime.fromtimestamp(unix_time, timezone.utc).isoformat(timespec="seconds")
 
 
 @app.get("/api/stack")

@@ -1,7 +1,9 @@
 """Every setting in one place.
 
-If a new SPHEREx data release comes out, the only change needed is COLLECTION
-(or set the SPHEREX_COLLECTION environment variable and restart).
+New SPHEREx data is picked up automatically: the search covers every SPHEREx
+release (see SPHEREX_SEARCH), and answers are refreshed every
+SEARCH_CACHE_HOURS. To pin specific releases instead, set the
+SPHEREX_COLLECTIONS environment variable and restart.
 """
 
 import os
@@ -19,7 +21,23 @@ IRSA_DATA_PREFIXES = (
     "https://irsa.ipac.caltech.edu/ibe/data/spherex/",
     "https://irsa.ipac.caltech.edu/ibe/data/wise/",
 )
-COLLECTION = os.environ.get("SPHEREX_COLLECTION", "spherex_dr1")
+
+# Which SPHEREx images to search. By default: every release of the mission.
+# SPHEREx data comes in two kinds of release, and both are wanted:
+#   spherex_qr3, qr4 ...  "Quick Releases", new images added every week,
+#                         about a month after they are taken
+#   spherex_dr1, dr2 ...  "Data Releases", the same images reprocessed later
+# Searching by mission instead of by name means a new release appears in the
+# tool by itself, with no code change. Where the same exposure is in two
+# releases, the better one is used (see spherex.release_rank).
+SPHEREX_SEARCH = {"FACILITY": "SPHEREx", "CALIB": 2, "DPTYPE": "image"}
+# Escape hatch: a comma-separated list of collections to use instead,
+# e.g. SPHEREX_COLLECTIONS=spherex_dr1,spherex_qr3
+SPHEREX_COLLECTIONS = [
+    name.strip()
+    for name in os.environ.get("SPHEREX_COLLECTIONS", os.environ.get("SPHEREX_COLLECTION", "")).split(",")
+    if name.strip()
+]
 
 # NASA keeps a public copy of the SPHEREx files on Amazon S3 that allows
 # downloading byte ranges, so we read only the pixels we need (see s3.py).

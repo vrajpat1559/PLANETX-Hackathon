@@ -1,5 +1,6 @@
 """SPHEREx: finding its exposures and reading its image files."""
 
+import re
 import warnings
 
 import numpy as np
@@ -9,23 +10,49 @@ from astropy.wcs import WCS
 from . import archive, config
 
 
-def find_exposures(ra: float, dec: float) -> list[dict]:
+def search_filter():
+    """What to ask the archive for: every SPHEREx release, unless pinned in config."""
+    return config.SPHEREX_COLLECTIONS or config.SPHEREX_SEARCH
+
+
+def find_exposures(ra: float, dec: float, max_age_hours: float | None = None) -> list[dict]:
     """Every SPHEREx exposure that covers the position, oldest first.
 
-    Each exposure is a dict: id, detector ("D1".."D6"), mjd, date, url.
+    Each exposure is a dict: id, detector ("D1".."D6"), mjd, date, url,
+    collection. The archive is asked again once the saved answer is older than
+    `max_age_hours` (default config.SEARCH_CACHE_HOURS), so new data shows up.
     """
-    rows = archive.search_images(config.COLLECTION, ra, dec, config.SEARCH_CACHE_HOURS)
-    exposures = [
-        {
+    if max_age_hours is None:
+        max_age_hours = config.SEARCH_CACHE_HOURS
+    rows = archive.search_images(search_filter(), ra, dec, max_age_hours)
+
+    best: dict[tuple, dict] = {}
+    for row in rows:
+        detector = row["energy_bandpassname"].replace("SPHEREx-", "")
+        # Only the six-detector spectral images; guards against any other kind
+        # of SPHEREx product a future release might add.
+        if detector not in config.DETECTORS or "/level2/" not in row["access_url"]:
+            continue
+        exposure = {
             "id": row["obs_id"],
-            "detector": row["energy_bandpassname"].replace("SPHEREx-", ""),
+            "detector": detector,
             "mjd": float(row["t_min"]),
             "date": Time(float(row["t_min"]), format="mjd").strftime("%Y-%m-%d %H:%M"),
             "url": row["access_url"],
+            "collection": row.get("obs_collection", ""),
         }
-        for row in rows
-    ]
-    return sorted(exposures, key=lambda exposure: exposure["mjd"])
+        # The same exposure can be in a quick release and a later data release.
+        key = (exposure["id"], detector)
+        if key not in best or release_rank(exposure["collection"]) > release_rank(best[key]["collection"]):
+            best[key] = exposure
+    return sorted(best.values(), key=lambda exposure: exposure["mjd"])
+
+
+def release_rank(collection: str) -> tuple:
+    """Which release of an exposure to prefer: data releases beat quick releases,
+    and newer beats older (spherex_dr2 > spherex_dr1 > spherex_qr3 > spherex_qr2)."""
+    match = re.search(r"_(dr|qr)(\d+)$", collection)
+    return (match.group(1) == "dr", int(match.group(2))) if match else (False, 0)
 
 
 def read_cutout(hdul, ra: float, dec: float) -> dict:

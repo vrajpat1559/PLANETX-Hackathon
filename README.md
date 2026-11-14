@@ -81,10 +81,18 @@ embedded:
 
 ## When new data is released
 
-Set `COLLECTION` in `backend/config.py` (or the `SPHEREX_COLLECTION`
-environment variable) to the new IRSA collection name and restart. New
-exposures inside the current collection are picked up automatically within
-six hours.
+Nothing to do. NASA publishes new SPHEREx images every week in a "quick
+release" (`spherex_qr3` today), about a month after they are taken, and
+reprocessed "data releases" (`spherex_dr1`, later `dr2` ...) less often. The
+tool searches every SPHEREx release at once (`SPHEREX_SEARCH` in
+`backend/config.py`), so new weeks and whole new releases appear by
+themselves within six hours (`SEARCH_CACHE_HOURS`). Where an exposure is in
+two releases, the data release is used.
+
+- `GET /api/observations?...&refresh=true` asks the archive again right away.
+- `GET /api/latest` reports the newest week in NASA's archive and when it was
+  uploaded, for a "data current as of" label.
+- To pin specific releases instead, set `SPHEREX_COLLECTIONS=spherex_dr1,spherex_qr3`.
 
 ## Data
 

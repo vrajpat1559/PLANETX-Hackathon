@@ -23,7 +23,10 @@ here fails, imaging.py falls back to IRSA.
 """
 
 import io
+import re
+import time
 import warnings
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -261,3 +264,55 @@ def _empty_primary() -> bytes:
 
 
 _EMPTY_PRIMARY = _empty_primary()
+
+
+# ---------- how current is the archive? ----------
+
+_latest_cache = {"at": 0.0, "value": None}
+
+
+def _list(prefix: str) -> tuple[list[str], list[tuple[str, str]]]:
+    """One level of the bucket: (sub-folders, [(file, last modified)])."""
+    response = _session.get(
+        config.S3_SPHEREX_PREFIX,
+        params={"list-type": 2, "delimiter": "/", "prefix": prefix},
+        timeout=20,
+    )
+    response.raise_for_status()
+    folders = re.findall(r"<Prefix>([^<]+/)</Prefix>", response.text)
+    files = re.findall(r"<Key>([^<]+)</Key><LastModified>([^<]+)<", response.text)
+    return folders, files
+
+
+def latest_release() -> dict:
+    """The newest SPHEREx week in NASA's bucket and when it was uploaded.
+
+    Quick releases (qr3, qr4, ...) are the ones that grow every week, so the
+    newest quick release is checked; data releases are listed alongside.
+    Cached in memory for an hour.
+    """
+    if _latest_cache["value"] and time.time() - _latest_cache["at"] < 3600:
+        return _latest_cache["value"]
+
+    releases = sorted(
+        folder.rstrip("/") for folder in _list("")[0] if re.fullmatch(r"(dr|qr)\d+/", folder)
+    )
+    rolling = [r for r in releases if r.startswith("qr")] or releases
+    newest = max(rolling, key=lambda name: int(name[2:]))
+    weeks = [f for f in _list(f"{newest}/level2/")[0] if f != f"{newest}/level2/"]
+    week = sorted(weeks)[-1]                 # names like 2026W40_2A/ sort by date
+    versions = _list(week)[0]                # one folder per processing run
+    uploaded = None
+    if versions:
+        files = _list(sorted(versions)[-1] + "1/")[1]  # detector 1 of the newest run
+        uploaded = files[0][1] if files else None
+
+    value = {
+        "releases": releases,
+        "newest_release": newest,
+        "newest_week": week.rstrip("/").split("/")[-1],
+        "uploaded": uploaded,
+        "checked": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _latest_cache.update(at=time.time(), value=value)
+    return value
