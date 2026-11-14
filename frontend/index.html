@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SPHEREx Blink</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>SPHEREx Blink</h1>
+    <p>Pick a patch of sky and flip between NASA SPHEREx images taken at different times. Anything that moves or changes will jump out.</p>
+  </header>
+
+  <main>
+    <section class="panel controls">
+      <form id="search">
+        <label for="target">Object name or coordinates (RA Dec in degrees)</label>
+        <div class="row">
+          <input id="target" type="text" placeholder="e.g. Barnard's Star  or  150.0 2.2" autocomplete="off">
+          <button type="submit">Go</button>
+        </div>
+      </form>
+
+      <div class="presets" id="presets"></div>
+
+      <div class="row options">
+        <label>Infrared band
+          <select id="band"></select>
+        </label>
+        <label>Field width
+          <select id="size">
+            <option value="0.15">0.15°</option>
+            <option value="0.25" selected>0.25°</option>
+            <option value="0.5">0.5°</option>
+          </select>
+        </label>
+        <label>Frames
+          <select id="limit">
+            <option value="8" selected>8 spread over time</option>
+            <option value="16">16 spread over time</option>
+            <option value="0">All</option>
+          </select>
+        </label>
+      </div>
+
+      <p id="status" role="status">Choose a target to begin.</p>
+    </section>
+
+    <section class="panel viewer">
+      <div class="stage">
+        <canvas id="view" width="41" height="41"></canvas>
+        <div class="crosshair" id="crosshair"></div>
+        <div class="stamp" id="stamp"></div>
+      </div>
+
+      <div class="row transport">
+        <button id="prev" type="button" title="Previous frame">◀</button>
+        <button id="play" type="button">Blink</button>
+        <button id="next" type="button" title="Next frame">▶</button>
+        <label>Speed
+          <input id="speed" type="range" min="1" max="10" value="3">
+        </label>
+        <label class="check"><input id="diff" type="checkbox"> Difference from first frame</label>
+        <label class="check"><input id="cross" type="checkbox" checked> Crosshair</label>
+      </div>
+
+      <div class="timeline" id="timeline"></div>
+      <p class="hint">Keys: ← → step, space blinks. North is up, east is left. Each SPHEREx pixel is 6.15 arcseconds.</p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
