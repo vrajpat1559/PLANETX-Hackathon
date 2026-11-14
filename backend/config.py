@@ -12,6 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = ROOT / "frontend"
 CACHE_DIR = ROOT / ".cache"
+# The most disk space the cache may use, in megabytes. When it goes over, the
+# files that have gone longest without being used are deleted (see cache.py).
+# 1000 MB holds the finished pictures for a few hundred targets.
+CACHE_MAX_MB = int(os.environ.get("CACHE_MAX_MB", "1000"))
 
 # ---------- where the data comes from ----------
 
@@ -45,6 +49,15 @@ SPHEREX_COLLECTIONS = [
 IRSA_SPHEREX_PREFIX = IRSA_DATA_PREFIXES[0]
 S3_SPHEREX_PREFIX = "https://nasa-irsa-spherex.s3.amazonaws.com/"
 USE_S3 = os.environ.get("USE_S3", "1") != "0"
+# The WISE exposures from 2014-2024 ("NEOWISE") are on S3 as well. Each file is
+# only 4 MB, so we download whole frames: about 2 s for a visit, against 15-30 s
+# through IRSA's cutout service, which also starts refusing requests (HTTP 503)
+# when asked for many cutouts in a row.
+IRSA_NEOWISE_PREFIX = "https://irsa.ipac.caltech.edu/ibe/data/wise/neowiser/p1bm_frm/"
+S3_NEOWISE_PREFIX = "https://nasa-irsa-wise.s3.us-west-2.amazonaws.com/wise/neowiser/images/p1bm_frm/"
+# The 2010 WISE images are 67 MB tiles; from those we read only the rows we need.
+IRSA_WISE_2010_PREFIX = "https://irsa.ipac.caltech.edu/ibe/data/wise/allwise/p3am_cdd/"
+S3_WISE_2010_PREFIX = "https://nasa-irsa-wise.s3.us-west-2.amazonaws.com/wise/allwise/images/p3am_cdd/"
 
 # WISE, the older telescope used for the 2010-2024 history (see wise.py).
 WISE_2010_COLLECTION = "wise_allwise"   # one deep image of the sky as it was in 2010
@@ -62,9 +75,10 @@ STACK_WORKERS = 8
 SEARCH_CACHE_HOURS = 6
 
 # Name lookup (Sesame). The Harvard mirror is faster than the main CDS site.
+# "SNV" = ask Simbad, then NED, then VizieR; the first one that knows the name wins.
 SESAME_URLS = [
-    "https://vizier.cfa.harvard.edu/viz-bin/nph-sesame/-oI/SN?",
-    "https://cds.unistra.fr/cgi-bin/nph-sesame/-oI/SN?",
+    "https://vizier.cfa.harvard.edu/viz-bin/nph-sesame/-oI/SNV?",
+    "https://cds.unistra.fr/cgi-bin/nph-sesame/-oI/SNV?",
 ]
 
 # ---------- the instrument ----------
@@ -111,6 +125,9 @@ VISIT_GAP_DAYS = 30
 # Near the poles a telescope can watch one spot for months without a break.
 # Such a long run is cut into pieces of at most this many days.
 VISIT_MAX_DAYS = 120
+# The most SPHEREx exposures combined into one image. An ordinary visit has
+# about 20 per detector; the deep fields at the ecliptic poles have over 1,000.
+SPHEREX_MAX_EXPOSURES_PER_VISIT = 40
 
 # Catalogue positions are for the year 2000. Fast-moving stars are shifted to
 # where they are at this date so they sit in the middle of the picture.

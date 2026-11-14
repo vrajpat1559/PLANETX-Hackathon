@@ -11,7 +11,6 @@ WISE's two bands sit inside SPHEREx's wavelength range:
   W2  4.6 microns  (like SPHEREx detectors D5 and D6)
 """
 
-import math
 import warnings
 
 import numpy as np
@@ -20,7 +19,7 @@ from astropy.time import Time
 from astropy.wcs import WCS
 
 from . import archive, config
-from .visits import group_into_visits
+from .visits import group_into_visits, spread_out
 
 # Brightness of a zero-magnitude star in each band, in janskys (WISE documentation).
 _ZERO_MAGNITUDE_JY = {"W1": 309.54, "W2": 171.787}
@@ -44,9 +43,8 @@ def find_visits(ra: float, dec: float) -> list[dict]:
     """
     visits = []
 
-    deep_2010 = _closest_tile(
-        archive.search_images(config.WISE_2010_COLLECTION, ra, dec, config.WISE_SEARCH_CACHE_HOURS),
-        ra, dec,
+    deep_2010 = _tiles_by_band(
+        archive.search_images(config.WISE_2010_COLLECTION, ra, dec, config.WISE_SEARCH_CACHE_HOURS)
     )
     if deep_2010:
         visits.append({"label": "WISE 2010", "date": "2010", "mjd": _MID_2010_MJD, "urls": deep_2010})
@@ -65,7 +63,10 @@ def find_visits(ra: float, dec: float) -> list[dict]:
                 "date": start.strftime("%Y-%m-%d"),
                 "mjd": visit[0]["mjd"],
                 "urls": {
-                    band: _spread_out([e["url"] for e in visit if e["band"] == band])
+                    band: spread_out(
+                        [e["url"] for e in visit if e["band"] == band],
+                        config.WISE_MAX_EXPOSURES_PER_VISIT,
+                    )
                     for band in _ZERO_MAGNITUDE_JY
                 },
             }
@@ -74,11 +75,21 @@ def find_visits(ra: float, dec: float) -> list[dict]:
 
 
 def read_cutout(hdul) -> dict:
-    """Pull an image out of a WISE cutout file, converted to SPHEREx's units (MJy/sr)."""
+    """Pull an image out of a WISE file, converted to SPHEREx's units (MJy/sr)."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        header = hdul[0].header
-        grid = WCS(header)
+        grid = WCS(hdul[0].header)
+    return to_brightness(hdul[0].header, hdul[0].data, grid)
+
+
+def to_brightness(header, pixels: np.ndarray, grid: WCS) -> dict:
+    """WISE pixel values -> {"brightness" (MJy/sr), "grid"}.
+
+    `grid` is the coordinate system of `pixels`, which may be a piece cut out
+    of the full image the header describes.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
         band = f"W{header['BAND']}"
 
         # WISE pixels count "DN". The file's MAGZP says how bright one DN is.
@@ -87,7 +98,7 @@ def read_cutout(hdul) -> dict:
         pixel_area_sr = grid.proj_plane_pixel_area().to_value("sr")
         mjy_per_sr_per_dn = jy_per_dn / 1e6 / pixel_area_sr
 
-        brightness = hdul[0].data.astype("float32") * np.float32(mjy_per_sr_per_dn)
+        brightness = pixels.astype("float32") * np.float32(mjy_per_sr_per_dn)
         _fill_saturated_cores(brightness)
     return {"brightness": brightness, "grid": grid}
 
@@ -109,26 +120,17 @@ def _fill_saturated_cores(brightness: np.ndarray) -> None:
     brightness[core] = brightest_neighbour[core]
 
 
-def _closest_tile(rows: list[dict], ra: float, dec: float) -> dict:
-    """The 2010 sky is cut into overlapping tiles; use the one best centred on the target."""
-    def distance(row):
-        d_ra = (float(row["s_ra"]) - ra) * math.cos(math.radians(dec))
-        return math.hypot(d_ra, float(row["s_dec"]) - dec)
+def _tiles_by_band(rows: list[dict]) -> dict:
+    """The 2010 sky is cut into square tiles that overlap a little at the edges.
 
+    A target near an edge sits on two tiles (four at a corner), and each one
+    shows only part of the picture. Using all of them fills the picture in.
+    """
     urls = {}
     for band in _ZERO_MAGNITUDE_JY:
-        tiles = [row for row in rows if row["energy_bandpassname"] == band]
+        tiles = sorted(row["access_url"] for row in rows if row["energy_bandpassname"] == band)
         if tiles:
-            urls[band] = [min(tiles, key=distance)["access_url"]]
+            urls[band] = tiles
     return urls
 
 
-def _spread_out(urls: list[str]) -> list[str]:
-    """Keep at most WISE_MAX_EXPOSURES_PER_VISIT, evenly spaced through the visit.
-
-    Near the poles of WISE's orbit a visit can hold hundreds of exposures.
-    """
-    limit = config.WISE_MAX_EXPOSURES_PER_VISIT
-    if len(urls) <= limit:
-        return urls
-    return [urls[round(i * (len(urls) - 1) / (limit - 1))] for i in range(limit)]

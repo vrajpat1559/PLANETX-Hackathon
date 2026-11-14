@@ -26,6 +26,19 @@ def group_into_visits(exposures: list[dict]) -> list[list[dict]]:
     return visits
 
 
+def spread_out(items: list, limit: int) -> list:
+    """At most `limit` of the items, evenly spaced from the first to the last.
+
+    Near the ecliptic poles both telescopes look at the same spot almost
+    continuously, and one visit can hold over a thousand exposures. Stacking a
+    few dozen spread across the visit gives nearly the same picture in seconds
+    instead of minutes.
+    """
+    if len(items) <= limit:
+        return items
+    return [items[round(i * (len(items) - 1) / (limit - 1))] for i in range(limit)]
+
+
 def describe_visit(index: int, exposures: list[dict]) -> dict:
     """A summary of one visit for the frontend."""
     start = Time(exposures[0]["mjd"], format="mjd")
