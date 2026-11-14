@@ -1,221 +1,174 @@
-"""SPHEREx blink viewer backend.
+"""SPHEREx Blink web server.
 
-Finds every SPHEREx exposure that covers a sky position (IRSA image search),
-cuts out a small region around it (IRSA cutout service), reprojects each
-cutout onto one shared north-up grid so frames line up pixel for pixel, and
-returns PNGs that the frontend flips between.
+This file only defines the web addresses (routes). The real work lives in:
+  targets.py   what the user typed  ->  a sky position
+  archive.py   searching and downloading from IRSA
+  spherex.py   SPHEREx: its exposure list and file format
+  wise.py      WISE: 2010-2024 history from an older telescope
+  visits.py    grouping exposures into visits
+  imaging.py   aligning and stacking images
+
+Run from the repo root:   uvicorn backend.main:app --reload
 """
 
-from __future__ import annotations
-
-import csv
-import hashlib
-import io
-import json
-import time
-from pathlib import Path
-
 import numpy as np
-import requests
-from astropy.io import fits
-from astropy.time import Time
-from astropy.wcs import WCS
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
-from reproject import reproject_interp
 
-ROOT = Path(__file__).resolve().parent.parent
-CACHE = ROOT / ".cache"
-CACHE.mkdir(exist_ok=True)
-
-SIA_URL = "https://irsa.ipac.caltech.edu/SIA"
-COLLECTION = "spherex_dr1"
-IRSA_DATA_PREFIX = "https://irsa.ipac.caltech.edu/ibe/data/spherex/"
-# Sesame name resolvers, fastest first. The main CDS site redirects to a slow
-# mirror, so try the Harvard mirror before it.
-SESAME_URLS = [
-    "https://vizier.cfa.harvard.edu/viz-bin/nph-sesame/-oI/SN?",
-    "https://cds.unistra.fr/cgi-bin/nph-sesame/-oI/SN?",
-]
-PIXEL_ARCSEC = 6.15  # SPHEREx native pixel scale
-
-# Approximate wavelength coverage of the six detectors, in microns.
-BANDS = {
-    "D1": "0.75-1.1",
-    "D2": "1.1-1.6",
-    "D3": "1.6-2.4",
-    "D4": "2.4-3.8",
-    "D5": "3.8-4.4",
-    "D6": "4.4-5.0",
-}
+from . import archive, config, imaging, spherex, targets, wise
+from .visits import describe_visit, group_into_visits
 
 app = FastAPI(title="SPHEREx Blink")
-session = requests.Session()
-session.headers["User-Agent"] = "spherex-blink-viewer"
+
+# The same three query parameters describe "which patch of sky" everywhere.
+RaParam = Query(ge=0, le=360, description="Right ascension, degrees")
+DecParam = Query(ge=-90, le=90, description="Declination, degrees")
+FovParam = Query(
+    config.DEFAULT_FOV_DEG,
+    ge=config.MIN_FOV_DEG,
+    le=config.MAX_FOV_DEG,
+    description="Field of view (width of the picture), degrees",
+)
 
 
-def fetch(url: str, *, params=None, timeout=120, tries=4) -> requests.Response:
-    """GET with retries: IRSA intermittently answers 502 under load."""
-    last = "no attempt made"
-    for attempt in range(tries):
-        try:
-            r = session.get(url, params=params, timeout=timeout)
-            if r.status_code == 200:
-                return r
-            last = f"HTTP {r.status_code}"
-        except requests.RequestException as exc:
-            last = type(exc).__name__
-        time.sleep(1.5 * (attempt + 1))
-    raise HTTPException(502, f"Archive request failed after {tries} tries ({last})")
+@app.exception_handler(archive.ArchiveError)
+def archive_unavailable(request, error):
+    return JSONResponse({"detail": str(error)}, status_code=502)
 
 
-def cache_path(kind: str, key: str, ext: str) -> Path:
-    digest = hashlib.sha1(key.encode()).hexdigest()[:20]
-    return CACHE / f"{kind}-{digest}.{ext}"
-
-
-@app.get("/api/bands")
-def bands():
-    return BANDS
+@app.get("/api/config")
+def get_config():
+    """What the frontend needs to know to build its menus."""
+    return {
+        "collection": config.COLLECTION,
+        "detectors": {
+            name: {"min_um": low, "max_um": high, "wise_band": wise.band_for_detector(name)}
+            for name, (low, high) in config.DETECTORS.items()
+        },
+        "fov": {
+            "min": config.MIN_FOV_DEG,
+            "max": config.MAX_FOV_DEG,
+            "default": config.DEFAULT_FOV_DEG,
+        },
+        "pixel_arcsec": config.OUTPUT_PIXEL_ARCSEC,
+    }
 
 
 @app.get("/api/resolve")
-def resolve(name: str = Query(min_length=1, max_length=80)):
-    """Turn an object name (M31, Vega, ...) into coordinates via CDS Sesame."""
-    reached = False
-    for base in SESAME_URLS:
-        try:
-            # Stream and stop at the coordinate line: some mirrors answer
-            # quickly but hold the connection open for a long time.
-            with session.get(
-                base + requests.utils.quote(name), timeout=15, stream=True
-            ) as r:
-                if r.status_code != 200:
-                    continue
-                reached = True
-                for line in r.iter_lines(decode_unicode=True):
-                    if line and line.startswith("%J "):
-                        parts = line.split()
-                        return {
-                            "name": name,
-                            "ra": float(parts[1]),
-                            "dec": float(parts[2]),
-                        }
-        except requests.RequestException:
-            continue
-    if reached:
-        raise HTTPException(404, f"Could not find an object named '{name}'")
-    raise HTTPException(502, "The name lookup service is not responding")
+def resolve(q: str = Query(min_length=1, max_length=80)):
+    """Turn an object name or typed coordinates into RA/Dec in degrees."""
+    try:
+        return targets.resolve(q)
+    except targets.TargetNotFound as error:
+        raise HTTPException(404, str(error))
+    except targets.LookupUnavailable as error:
+        raise HTTPException(502, str(error))
 
 
-@app.get("/api/frames")
-def frames(
-    ra: float = Query(ge=0, le=360),
-    dec: float = Query(ge=-90, le=90),
+@app.get("/api/observations")
+def observations(ra: float = RaParam, dec: float = DecParam):
+    """Everything SPHEREx has at this position: the visits, and each exposure."""
+    visits = group_into_visits(spherex.find_exposures(ra, dec))
+    exposures = [
+        {**exposure, "visit": index}
+        for index, visit in enumerate(visits)
+        for exposure in visit
+    ]
+    return {
+        "ra": ra,
+        "dec": dec,
+        "collection": config.COLLECTION,
+        "visits": [describe_visit(index, visit) for index, visit in enumerate(visits)],
+        "exposures": exposures,
+    }
+
+
+@app.get("/api/stack")
+def stack(
+    visit: int = Query(ge=0),
+    detector: str = Query(pattern="^D[1-6]$"),
+    ra: float = RaParam,
+    dec: float = DecParam,
+    fov: float = FovParam,
 ):
-    """List every SPHEREx exposure covering the position, oldest first."""
-    key = f"{COLLECTION}:{ra:.5f}:{dec:.5f}"
-    path = cache_path("frames", key, "json")
-    if path.exists():
-        return json.loads(path.read_text())
+    """All exposures of one visit in one detector, combined into a single image."""
+    visits = group_into_visits(spherex.find_exposures(ra, dec))
+    if visit >= len(visits):
+        raise HTTPException(404, "No such visit")
+    urls = [e["url"] for e in visits[visit] if e["detector"] == detector]
+    if not urls:
+        raise HTTPException(404, f"No {detector} exposures in this visit")
 
-    r = fetch(
-        SIA_URL,
-        params={
-            "COLLECTION": COLLECTION,
-            "POS": f"circle {ra} {dec} 0.01",
-            "RESPONSEFORMAT": "csv",
-            "MAXREC": 2000,
-        },
-    )
-    out = []
-    for row in csv.DictReader(io.StringIO(r.text)):
-        url = row.get("access_url", "")
-        if not url.startswith(IRSA_DATA_PREFIX) or not url.endswith(".fits"):
-            continue
-        mjd = float(row["t_min"])
-        out.append(
-            {
-                "id": row["obs_id"],
-                "band": row["energy_bandpassname"].replace("SPHEREx-", ""),
-                "mjd": mjd,
-                "date": Time(mjd, format="mjd").strftime("%Y-%m-%d %H:%M"),
-                "url": url,
-            }
-        )
-    out.sort(key=lambda f: f["mjd"])
-    result = {"ra": ra, "dec": dec, "count": len(out), "frames": out}
-    path.write_text(json.dumps(result))
-    return result
+    result = imaging.stack_exposures(urls, ra, dec, fov)
+    return _image_response(result["image"], {"X-Exposures-Used": result["used"]})
 
 
-def target_grid(ra: float, dec: float, size_deg: float):
-    """North-up, east-left tangent grid shared by every frame of a target."""
-    n = int(np.clip(round(size_deg * 3600 / PIXEL_ARCSEC), 16, 512))
-    w = WCS(naxis=2)
-    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-    w.wcs.crval = [ra, dec]
-    w.wcs.crpix = [(n + 1) / 2, (n + 1) / 2]
-    w.wcs.cdelt = [-PIXEL_ARCSEC / 3600, PIXEL_ARCSEC / 3600]
-    return w, n
-
-
-def render(url: str, ra: float, dec: float, size_deg: float) -> bytes:
-    # Ask for a slightly larger cutout so rotation doesn't leave empty corners.
-    r = fetch(url, params={"center": f"{ra},{dec}", "size": f"{size_deg * 1.5}deg"})
-    with fits.open(io.BytesIO(r.content)) as hdul:
-        hdu = hdul["IMAGE"]
-        data = hdu.data.astype("float32")
-        # Remove the smooth zodiacal-light glow so faint sources stand out.
-        if "ZODI" in hdul and hdul["ZODI"].data is not None:
-            data = data - hdul["ZODI"].data.astype("float32")
-        wcs_in = WCS(hdu.header)
-
-    wcs_out, n = target_grid(ra, dec, size_deg)
-    grid, _ = reproject_interp((data, wcs_in), wcs_out, shape_out=(n, n))
-
-    good = np.isfinite(grid)
-    if not good.any():
-        raise HTTPException(404, "This exposure has no valid pixels at the position")
-    # Per-frame robust normalisation so frames blink at matching brightness.
-    med = np.median(grid[good])
-    sigma = 1.4826 * np.median(np.abs(grid[good] - med)) or 1.0
-    scaled = np.arcsinh((grid - med) / sigma / 3.0)
-    lo, hi = np.arcsinh(-1.0), np.arcsinh(40.0)
-    img = np.clip((scaled - lo) / (hi - lo), 0, 1)
-    img = np.where(good, img, 0)
-    img = (img * 255).astype("uint8")[::-1]  # FITS rows run bottom-up
-
-    buf = io.BytesIO()
-    Image.fromarray(img, mode="L").save(buf, format="PNG")
-    return buf.getvalue()
-
-
-@app.get("/api/cutout.png")
-def cutout(
-    url: str,
-    ra: float = Query(ge=0, le=360),
-    dec: float = Query(ge=-90, le=90),
-    size: float = Query(0.25, ge=0.05, le=0.8, description="Field width in degrees"),
-):
-    # Only ever fetch from the IRSA SPHEREx archive.
-    if not url.startswith(IRSA_DATA_PREFIX) or not url.endswith(".fits") or "?" in url:
+@app.get("/api/exposure")
+def exposure(url: str, ra: float = RaParam, dec: float = DecParam, fov: float = FovParam):
+    """A single exposure, aligned to the same grid as the stacks."""
+    if not archive.is_archive_image_url(url):
         raise HTTPException(400, "url must be a SPHEREx image on IRSA")
-    path = cache_path("cut", f"{url}:{ra:.5f}:{dec:.5f}:{size:.3f}", "png")
-    if not path.exists():
-        path.write_bytes(render(url, ra, dec, size))
+    result = imaging.align_exposure(url, ra, dec, fov)
+    if not np.isfinite(result["image"]).any():
+        raise HTTPException(404, "This exposure has no valid pixels at the position")
+    return _image_response(
+        result["image"], {"X-Wavelength-Um": f"{float(result['wavelength_um']):.4f}"}
+    )
+
+
+@app.get("/api/wise/visits")
+def wise_visits(ra: float = RaParam, dec: float = DecParam):
+    """The older WISE telescope's visits to this position (2010-2024)."""
+    return [
+        {
+            "index": index,
+            "label": visit["label"],
+            "date": visit["date"],
+            "mjd": visit["mjd"],
+            "exposures_per_band": {band: len(urls) for band, urls in visit["urls"].items()},
+        }
+        for index, visit in enumerate(wise.find_visits(ra, dec))
+    ]
+
+
+@app.get("/api/wise/stack")
+def wise_stack(
+    visit: int = Query(ge=0),
+    band: str = Query(pattern="^W[12]$"),
+    ra: float = RaParam,
+    dec: float = DecParam,
+    fov: float = FovParam,
+):
+    """One WISE visit as a single image, on the same grid and units as SPHEREx."""
+    visits = wise.find_visits(ra, dec)
+    if visit >= len(visits) or not visits[visit]["urls"].get(band):
+        raise HTTPException(404, f"No {band} images for this WISE visit")
+    result = imaging.stack_exposures(visits[visit]["urls"][band], ra, dec, fov)
+    return _image_response(result["image"], {"X-Exposures-Used": result["used"]})
+
+
+def _image_response(image: np.ndarray, extra_headers: dict) -> Response:
+    """Send an image as raw 32-bit floats (little-endian, top row first).
+
+    The browser receives real brightness values rather than a finished picture,
+    so it can subtract, add and re-stretch images without asking the server.
+    """
+    headers = {
+        "X-Image-Size": str(image.shape[0]),
+        "Cache-Control": "public, max-age=86400",
+        **{name: str(value) for name, value in extra_headers.items()},
+    }
     return Response(
-        path.read_bytes(),
-        media_type="image/png",
-        headers={"Cache-Control": "public, max-age=86400"},
+        image.astype("<f4").tobytes(),
+        media_type="application/octet-stream",
+        headers=headers,
     )
 
 
 @app.get("/")
 def index():
-    return FileResponse(ROOT / "frontend" / "index.html")
+    return FileResponse(config.FRONTEND_DIR / "index.html")
 
 
-app.mount("/", StaticFiles(directory=ROOT / "frontend"), name="frontend")
+app.mount("/", StaticFiles(directory=config.FRONTEND_DIR), name="frontend")
