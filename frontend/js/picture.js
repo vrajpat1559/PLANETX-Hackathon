@@ -46,6 +46,88 @@ export function paintDifference(context, pixels, reference, size, noise, whiteLe
   });
 }
 
+// ---------- highlighting changes ----------
+
+const CHANGE_SIGMA = 4;            // a change must be this many times the noise to count
+const CHANGE_FRACTION = 0.5;       // ...and at least half of how bright that spot is
+const MIN_SPOT_PIXELS = 4;         // tiny blips (cosmic rays, glitches) are ignored
+const BRIGHTER = [60, 255, 130];   // green
+const FAINTER = [255, 70, 220];    // magenta (green/magenta is safe for colour-blind viewers)
+
+// Draw `pixels` dimmed, with spots that got brighter than in `previous` painted
+// green and spots that got fainter painted magenta. Returns how many spots changed.
+//
+// A moving object shows up as a pair: magenta where it was, green where it is now.
+export function paintHighlights(context, pixels, previous, size, noise, whiteLevel) {
+  const count = size * size;
+
+  // Change at every pixel, and how much the change jitters for no reason.
+  const change = new Float32Array(count);
+  for (let i = 0; i < count; i++) change[i] = pixels[i] - previous[i];
+  const threshold = CHANGE_SIGMA * noiseLevel(change);
+
+  // +1 brighter, -1 fainter, 0 no real change. A star that is simply a bit
+  // sharper or blurrier in one image changes by a small fraction of its
+  // brightness; something that appeared or vanished changes by nearly all of it.
+  const sign = new Int8Array(count);
+  for (let i = 0; i < count; i++) {
+    const big = Math.abs(change[i]) > threshold;
+    const large = Math.abs(change[i]) > CHANGE_FRACTION * Math.max(Math.abs(pixels[i]), Math.abs(previous[i]));
+    if (big && large) sign[i] = change[i] > 0 ? 1 : -1;
+  }
+
+  // Group touching pixels with the same sign; keep groups big enough to be real.
+  const keep = new Uint8Array(count);
+  const seen = new Uint8Array(count);
+  let spots = 0;
+  for (let start = 0; start < count; start++) {
+    if (!sign[start] || seen[start]) continue;
+    const group = [];
+    const stack = [start];
+    seen[start] = 1;
+    while (stack.length) {
+      const p = stack.pop();
+      group.push(p);
+      const x = p % size, y = (p - x) / size;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
+          const q = ny * size + nx;
+          if (!seen[q] && sign[q] === sign[start]) { seen[q] = 1; stack.push(q); }
+        }
+      }
+    }
+    if (group.length >= MIN_SPOT_PIXELS) {
+      spots++;
+      for (const p of group) keep[p] = 1;
+    }
+  }
+
+  // Draw the normal picture at 60% brightness, then colour the changed spots.
+  const black = compress(-2 * noise, noise);
+  const white = compress(whiteLevel * noise, noise);
+  context.canvas.width = size;
+  context.canvas.height = size;
+  const output = context.createImageData(size, size);
+  for (let i = 0; i < count; i++) {
+    const value = pixels[i];
+    let rgb;
+    if (keep[i]) {
+      rgb = sign[i] > 0 ? BRIGHTER : FAINTER;
+    } else if (!Number.isFinite(value)) {
+      rgb = MISSING_COLOUR;
+    } else {
+      const shade = Math.max(0, Math.min(1, (compress(value, noise) - black) / (white - black)));
+      const grey = shade * 255 * 0.6;
+      rgb = [grey, grey, grey];
+    }
+    output.data.set([rgb[0], rgb[1], rgb[2], 255], 4 * i);
+  }
+  context.putImageData(output, 0, 0);
+  return spots;
+}
+
 // Average several images pixel by pixel, skipping missing values.
 export function average(images) {
   const length = images[0].length;

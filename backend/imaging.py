@@ -15,6 +15,7 @@ edge, so they can be drawn on screen as they are. Missing pixels are NaN.
 """
 
 import io
+import logging
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 
@@ -23,8 +24,10 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from reproject import reproject_interp
 
-from . import archive, config, spherex, wise
+from . import archive, config, s3, spherex, wise
 from .cache import cache_file
+
+log = logging.getLogger("uvicorn.error")
 
 
 def sky_grid(ra: float, dec: float, fov_deg: float) -> tuple[WCS, int]:
@@ -51,20 +54,21 @@ def align_exposure(image_url: str, ra: float, dec: float, fov_deg: float) -> dic
         with np.load(path) as saved:
             return {name: saved[name] for name in saved.files}
 
-    # Ask for extra margin so a rotated exposure still fills the corners.
-    raw = archive.download_cutout(image_url, ra, dec, fov_deg * 1.5)
-    with fits.open(io.BytesIO(raw)) as hdul:
-        if "/wise/" in image_url:
-            cutout = wise.read_cutout(hdul)
-        else:
-            cutout = spherex.read_cutout(hdul, ra, dec)
-
     target_grid, size = sky_grid(ra, dec, fov_deg)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        image, _ = reproject_interp(
-            (cutout["brightness"], cutout["grid"]), target_grid, shape_out=(size, size)
-        )
+    try:
+        # Ask for extra margin so a rotated exposure still fills the corners.
+        cutout = _read_cutout(image_url, ra, dec, fov_deg * 1.5)
+    except s3.NoOverlap:
+        cutout = None  # the exposure misses the picture entirely
+
+    if cutout is None:
+        image = np.full((size, size), np.nan)
+    else:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            image, _ = reproject_interp(
+                (cutout["brightness"], cutout["grid"]), target_grid, shape_out=(size, size)
+            )
 
     image = image.astype("float32")
     if np.isfinite(image).any():
@@ -73,10 +77,32 @@ def align_exposure(image_url: str, ra: float, dec: float, fov_deg: float) -> dic
 
     result = {
         "image": image,
-        "wavelength_um": np.float32(cutout.get("wavelength_um", np.nan)),
+        "wavelength_um": np.float32((cutout or {}).get("wavelength_um", np.nan)),
     }
     np.savez(path, **result)
     return result
+
+
+def _read_cutout(image_url: str, ra: float, dec: float, width_deg: float) -> dict:
+    """The region around (ra, dec) of one exposure, before alignment.
+
+    SPHEREx is read from Amazon S3 when possible (about 1-2 s); WISE, and any
+    SPHEREx file S3 cannot serve, go through IRSA's cutout service (about 10 s).
+    """
+    is_spherex = image_url.startswith(config.IRSA_SPHEREX_PREFIX)
+    if is_spherex and config.USE_S3:
+        try:
+            return s3.read_cutout(image_url, ra, dec, width_deg)
+        except s3.NoOverlap:
+            raise
+        except Exception as error:  # any S3 or parsing problem: use IRSA instead
+            log.warning("S3 read failed for %s (%s); falling back to IRSA", image_url, error)
+
+    raw = archive.download_cutout(image_url, ra, dec, width_deg)
+    with fits.open(io.BytesIO(raw)) as hdul:
+        if is_spherex:
+            return spherex.read_cutout(hdul, ra, dec)
+        return wise.read_cutout(hdul)
 
 
 def stack_exposures(image_urls: list[str], ra: float, dec: float, fov_deg: float) -> dict:
@@ -98,7 +124,7 @@ def stack_exposures(image_urls: list[str], ra: float, dec: float, fov_deg: float
         except archive.ArchiveError:
             return None  # one lost exposure should not sink the whole stack
 
-    with ThreadPoolExecutor(config.MAX_ARCHIVE_CONNECTIONS) as pool:
+    with ThreadPoolExecutor(config.STACK_WORKERS) as pool:
         results = list(pool.map(try_align, image_urls))
     downloaded = [image for image in results if image is not None]
     # An exposure can touch the search circle yet miss the picture entirely.

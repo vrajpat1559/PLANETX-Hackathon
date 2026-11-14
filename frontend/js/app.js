@@ -8,7 +8,7 @@
 // display, playing, address bar, wiring.
 
 import { api } from "./api.js";
-import { average, noiseLevel, paintDifference, paintImage } from "./picture.js";
+import { average, noiseLevel, paintDifference, paintHighlights, paintImage } from "./picture.js";
 import { drawStarfield } from "./starfield.js";
 import { drawTimeline, markCurrent } from "./timeline.js";
 
@@ -247,6 +247,16 @@ function show(index) {
   } else if (viewMode === "difference" && frame !== first) {
     paintDifference(context, frame.pixels, first.pixels, frame.size, state.noise, whiteLevel());
     caption = `${frame.label} minus ${first.label}`;
+  } else if (viewMode === "highlight" && frame !== first) {
+    const previous = ready[ready.indexOf(frame) - 1];
+    if (previous.telescope !== frame.telescope || previous.size !== frame.size) {
+      // Two telescopes see the sky differently, so every star would "change".
+      paintImage(context, frame.pixels, frame.size, state.noise, whiteLevel());
+      caption = `${frame.label} · previous image is from another telescope, nothing highlighted`;
+    } else {
+      const spots = paintHighlights(context, frame.pixels, previous.pixels, frame.size, state.noise, whiteLevel());
+      caption = `${frame.label} vs ${previous.label}: ${spots} change${spots === 1 ? "" : "s"} · green brighter, magenta fainter`;
+    }
   } else {
     paintImage(context, frame.pixels, frame.size, state.noise, whiteLevel());
     caption = [frame.label, frame.band, frame.detail].filter(Boolean).join(" · ");

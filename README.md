@@ -26,9 +26,15 @@ of exposures over a few weeks. We call one burst a **visit**.
 3. **Build one image per visit.** For the chosen detector, every exposure in
    the visit is cut out, lined up on a shared north-up grid, and combined by
    taking the median. This is much cleaner than any single exposure.
+   SPHEREx pixels are read straight from NASA's public copy of the archive on
+   Amazon S3, downloading only the rows that cover the field (about 2 s per
+   exposure instead of about 10 s through IRSA's cutout service, which is kept
+   as an automatic fallback and is still used for WISE).
 4. **Blink.** The browser receives real brightness values (not finished
    pictures), so it can blink, subtract and add images with one shared
-   brightness scale.
+   brightness scale. "Highlight changes" paints whatever got brighter since
+   the previous image green and whatever got fainter magenta, so a moving
+   star shows up as a magenta/green pair.
 5. **Add 15 years of history.** SPHEREx only started in 2025, and nearby stars
    move about one pixel between its visits. So the timeline also shows images
    from WISE, an older NASA infrared telescope: one from 2010 and one for each
@@ -47,6 +53,7 @@ backend/
   main.py      the web addresses (routes) and nothing else
   targets.py   name or typed coordinates -> RA/Dec
   archive.py   searching and downloading from IRSA
+  s3.py        reading only the needed SPHEREx pixels from Amazon S3
   spherex.py   SPHEREx: its exposure list and file format
   wise.py      WISE: its visits (2010-2024) and file format
   visits.py    grouping exposures into visits

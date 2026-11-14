@@ -21,6 +21,13 @@ IRSA_DATA_PREFIXES = (
 )
 COLLECTION = os.environ.get("SPHEREX_COLLECTION", "spherex_dr1")
 
+# NASA keeps a public copy of the SPHEREx files on Amazon S3 that allows
+# downloading byte ranges, so we read only the pixels we need (see s3.py).
+# Same folder layout as IRSA. Set USE_S3=0 to always use IRSA's cutout service.
+IRSA_SPHEREX_PREFIX = IRSA_DATA_PREFIXES[0]
+S3_SPHEREX_PREFIX = "https://nasa-irsa-spherex.s3.amazonaws.com/"
+USE_S3 = os.environ.get("USE_S3", "1") != "0"
+
 # WISE, the older telescope used for the 2010-2024 history (see wise.py).
 WISE_2010_COLLECTION = "wise_allwise"   # one deep image of the sky as it was in 2010
 NEOWISE_COLLECTION = "neowiser"         # single exposures, every six months 2014-2024
@@ -29,6 +36,9 @@ WISE_MAX_EXPOSURES_PER_VISIT = 16
 
 # IRSA answers "502" when hit with too many requests at once.
 MAX_ARCHIVE_CONNECTIONS = 4
+# Exposures aligned at the same time when building a stack. Higher than the
+# IRSA limit because S3 has no such limit; IRSA calls still queue at 4.
+STACK_WORKERS = 8
 # How long a "which exposures cover this spot" answer is reused before we ask
 # IRSA again. Keeps the tool current as new data arrives.
 SEARCH_CACHE_HOURS = 6

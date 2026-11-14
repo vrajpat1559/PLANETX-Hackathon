@@ -36,20 +36,14 @@ def read_cutout(hdul, ra: float, dec: float) -> dict:
     at (ra, dec): SPHEREx's filters change colour across the detector, so every
     exposure sees the target at a different wavelength.
     """
+    image_hdu = hdul["IMAGE"]
+    brightness = clean_brightness(
+        image_hdu.data, hdul["ZODI"].data, hdul["FLAGS"].header, hdul["FLAGS"].data
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        image_hdu = hdul["IMAGE"]
-        brightness = image_hdu.data.astype("float32")
-        # Remove the smooth glow of sunlight scattered by dust in the solar system.
-        brightness -= hdul["ZODI"].data.astype("float32")
-
-        brightness[_flagged(hdul["FLAGS"], config.BAD_PIXEL_FLAGS)] = np.nan
-        saturated = _flagged(hdul["FLAGS"], config.SATURATED_FLAGS) & np.isnan(brightness)
-        if saturated.any() and np.isfinite(brightness).any():
-            brightness[saturated] = np.nanmax(brightness)
-
         grid = WCS(image_hdu.header)
-        wavelength, bandwidth = _wavelength_at(hdul, grid, ra, dec)
+    wavelength, bandwidth = wavelength_at(image_hdu.header, hdul, image_hdu.data.shape, ra, dec)
     return {
         "brightness": brightness,
         "grid": grid,
@@ -58,26 +52,49 @@ def read_cutout(hdul, ra: float, dec: float) -> dict:
     }
 
 
-def _flagged(flags_hdu, flag_names: list[str]) -> np.ndarray:
+def clean_brightness(image, zodi, flags_header, flags) -> np.ndarray:
+    """Brightness with the sky glow removed and bad pixels dealt with.
+
+    Shared by the IRSA path (read_cutout) and the S3 path (s3.py), which hand
+    over the same three arrays cut from the same file.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        brightness = image.astype("float32")
+        # Remove the smooth glow of sunlight scattered by dust in the solar system.
+        brightness -= zodi.astype("float32")
+
+        brightness[_flagged(flags_header, flags, config.BAD_PIXEL_FLAGS)] = np.nan
+        saturated = _flagged(flags_header, flags, config.SATURATED_FLAGS) & np.isnan(brightness)
+        if saturated.any() and np.isfinite(brightness).any():
+            brightness[saturated] = np.nanmax(brightness)
+    return brightness
+
+
+def _flagged(header, flags, flag_names: list[str]) -> np.ndarray:
     """True where a pixel carries any of the named flags (e.g. "HOT").
 
     The file itself says which bit means what: header MSKN0010 = 'HOT' goes
     with MSKM0010 = 1024, and so on.
     """
-    header = flags_hdu.header
     wanted_bits = 0
     for name_keyword in header["MSKN*"]:
         if header[name_keyword] in flag_names:
             wanted_bits |= int(header[name_keyword.replace("MSKN", "MSKM")])
-    return (flags_hdu.data & wanted_bits) != 0
+    return (flags & wanted_bits) != 0
 
 
-def _wavelength_at(hdul, grid: WCS, ra: float, dec: float) -> tuple[float, float]:
-    """Wavelength and bandwidth (microns) the exposure recorded at a sky position."""
-    x, y = grid.world_to_pixel_values(ra, dec)
-    height, width = hdul["IMAGE"].data.shape
-    if not (0 <= x < width and 0 <= y < height):
-        return float("nan"), float("nan")
-    spectral = WCS(hdul["IMAGE"].header, fobj=hdul, key="W")
-    wavelength, bandwidth = spectral.pixel_to_world_values(x, y)
+def wavelength_at(image_header, hdul, shape, ra: float, dec: float) -> tuple[float, float]:
+    """Wavelength and bandwidth (microns) the exposure recorded at a sky position.
+
+    `hdul` must contain the WCS-WAVE lookup table; `shape` is the image's (rows, columns).
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        x, y = WCS(image_header).world_to_pixel_values(ra, dec)
+        height, width = shape
+        if not (0 <= x < width and 0 <= y < height):
+            return float("nan"), float("nan")
+        spectral = WCS(image_header, fobj=hdul, key="W")
+        wavelength, bandwidth = spectral.pixel_to_world_values(x, y)
     return float(wavelength), float(bandwidth)
