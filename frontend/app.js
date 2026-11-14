@@ -317,7 +317,7 @@ function frameSettled(frame) {
   if (ready.length && (ready.length === 1 || state.frames[state.current].status !== "ready")) {
     show(state.frames.indexOf(ready[0]));
   } else if (ready.length && $("diff").checked) {
-    show(state.current); // the reference frame may have just arrived
+    show(state.current); // the previous frame may have just arrived
   }
   const pending = state.frames.some((f) => f.status === "queued" || f.status === "loading");
   if (!ready.length && !pending) {
@@ -392,6 +392,128 @@ function pixelsOf(frame) {
   return frame.pixels;
 }
 
+// ---------- change highlighting ----------
+
+const CHANGE_SIGMA = 4;     // a pixel must change by this many noise sigmas to count
+const MIN_SPOT_PIXELS = 2;  // lone hot pixels (cosmic rays, glitches) are ignored
+const BRIGHTER = [60, 255, 130];   // green
+const FAINTER = [255, 70, 220];    // magenta
+
+// The nearest loaded frame before `index` in time, or null for the first one.
+function previousReady(index) {
+  for (let i = index - 1; i >= 0; i--) {
+    if (state.frames[i].status === "ready") return state.frames[i];
+  }
+  return null;
+}
+
+// Median of integer values in -255..255, via a histogram.
+function medianOf(values, count) {
+  const hist = new Uint32Array(511);
+  for (let i = 0; i < count; i++) hist[values[i] + 255]++;
+  let seen = 0;
+  for (let v = 0; v < 511; v++) {
+    seen += hist[v];
+    if (seen * 2 >= count) return v - 255;
+  }
+  return 0;
+}
+
+// Draw `frame` dimmed, with pixels that got significantly brighter than in
+// `previous` painted green and fainter ones magenta. Returns the number of
+// changed spots (connected groups of at least MIN_SPOT_PIXELS pixels).
+function highlightChanges(frame, previous) {
+  const w = canvas.width, h = canvas.height, n = w * h;
+  const a = pixelsOf(frame).data;
+  const b = pixelsOf(previous).data;
+
+  // Pixel-by-pixel change, skipping pixels either frame doesn't cover (0).
+  const diff = new Int16Array(n);
+  const covered = new Uint8Array(n);
+  const sample = new Int16Array(n);
+  let m = 0;
+  for (let p = 0; p < n; p++) {
+    const va = a[p * 4], vb = b[p * 4];
+    if (va && vb) { covered[p] = 1; diff[p] = va - vb; sample[m++] = va - vb; }
+  }
+
+  // Robust noise level: median absolute deviation, so real changes don't inflate it.
+  const med = medianOf(sample, m);
+  for (let i = 0; i < m; i++) sample[i] = Math.abs(sample[i] - med);
+  const sigma = Math.max(1.4826 * medianOf(sample, m), 2);
+  const threshold = CHANGE_SIGMA * sigma;
+
+  // +1 brighter, -1 fainter, 0 unchanged.
+  const sign = new Int8Array(n);
+  for (let p = 0; p < n; p++) {
+    if (!covered[p]) continue;
+    const d = diff[p] - med;
+    if (d > threshold) sign[p] = 1;
+    else if (d < -threshold) sign[p] = -1;
+  }
+
+  // Group same-sign neighbours (8-connected) and keep groups big enough to be real.
+  const keep = new Uint8Array(n);
+  const seen = new Uint8Array(n);
+  const stack = [];
+  let spots = 0;
+  for (let start = 0; start < n; start++) {
+    if (!sign[start] || seen[start]) continue;
+    const s = sign[start];
+    const group = [];
+    stack.push(start);
+    seen[start] = 1;
+    while (stack.length) {
+      const p = stack.pop();
+      group.push(p);
+      const x = p % w, y = (p - x) / w;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const q = ny * w + nx;
+          if (!seen[q] && sign[q] === s) { seen[q] = 1; stack.push(q); }
+        }
+      }
+    }
+    if (group.length >= MIN_SPOT_PIXELS) {
+      spots++;
+      for (const p of group) keep[p] = 1;
+    }
+  }
+
+  // A one-pixel halo around each spot so small changes are easy to see.
+  const halo = new Int8Array(n);
+  for (let p = 0; p < n; p++) {
+    if (!keep[p]) continue;
+    const x = p % w, y = (p - x) / w;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < w && ny < h && !keep[ny * w + nx]) halo[ny * w + nx] = sign[p];
+      }
+    }
+  }
+
+  const out = ctx.createImageData(w, h);
+  for (let p = 0; p < n; p++) {
+    const i = p * 4;
+    const base = a[i] * 0.6; // dim the unchanged sky so the colours stand out
+    if (keep[p] || halo[p]) {
+      const c = (keep[p] ? sign[p] : halo[p]) > 0 ? BRIGHTER : FAINTER;
+      const mix = keep[p] ? 1 : 0.45;
+      out.data[i] = c[0] * mix + base * (1 - mix);
+      out.data[i + 1] = c[1] * mix + base * (1 - mix);
+      out.data[i + 2] = c[2] * mix + base * (1 - mix);
+    } else {
+      out.data[i] = out.data[i + 1] = out.data[i + 2] = base;
+    }
+    out.data[i + 3] = 255;
+  }
+  ctx.putImageData(out, 0, 0);
+  return spots;
+}
+
 // ---------- display ----------
 
 function show(index) {
@@ -402,18 +524,10 @@ function show(index) {
   canvas.height = frame.image.height;
 
   const diffOn = $("diff").checked;
-  const reference = state.frames.find((f) => f.status === "ready");
-  if (diffOn && reference && reference !== frame) {
-    // Grey means unchanged; bright means brighter now, dark means fainter now.
-    const a = pixelsOf(frame).data;
-    const b = pixelsOf(reference).data;
-    const out = ctx.createImageData(canvas.width, canvas.height);
-    for (let i = 0; i < a.length; i += 4) {
-      const v = Math.max(0, Math.min(255, 128 + (a[i] - b[i]) * 1.5));
-      out.data[i] = out.data[i + 1] = out.data[i + 2] = v;
-      out.data[i + 3] = 255;
-    }
-    ctx.putImageData(out, 0, 0);
+  const previous = diffOn ? previousReady(index) : null;
+  let spots = null;
+  if (previous) {
+    spots = highlightChanges(frame, previous);
   } else {
     ctx.drawImage(frame.image, 0, 0);
   }
@@ -422,19 +536,21 @@ function show(index) {
   $("stamp").textContent = `${frame.meta.date} UTC · ${frame.meta.band}`;
   $("counter").textContent = `${index + 1} / ${state.frames.length}`;
   $("diff-badge").hidden = !diffOn;
-  $("diff-badge").textContent = reference === frame ? "Reference frame" : "Difference";
+  $("diff-badge").textContent = !previous
+    ? "First frame · nothing to compare"
+    : spots ? `${plural(spots, "change")} since ${dayLabel(previous.meta.date)}` : `No changes since ${dayLabel(previous.meta.date)}`;
   $("diff-legend").hidden = !diffOn;
   canvas.setAttribute(
     "aria-label",
-    `${diffOn && reference !== frame ? "Difference image" : "SPHEREx infrared image"} of ` +
-    `${state.target.label}, ${frame.meta.date} UTC, band ${frame.meta.band}`
+    `SPHEREx infrared image of ${state.target.label}, ${frame.meta.date} UTC, band ${frame.meta.band}` +
+    (previous ? `, with ${plural(spots, "change")} since the previous frame highlighted` : "")
   );
   drawScale(frame.image.width);
 
   for (const f of state.frames) {
     const active = f === frame;
     f.chip?.classList.toggle("active", active);
-    f.chip?.classList.toggle("reference", diffOn && f === reference);
+    f.chip?.classList.toggle("reference", f === previous);
     if (active) f.chip?.setAttribute("aria-current", "true");
     else f.chip?.removeAttribute("aria-current");
     f.tick?.classList.toggle("active", active);
