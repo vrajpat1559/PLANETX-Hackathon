@@ -1,6 +1,7 @@
 // The timeline under the picture: one dot per image, placed by date.
 
 const MIN_GAP_PERCENT = 3.2; // dots closer than this are nudged apart so each can be clicked
+const CROWDED = 28;          // with more frames than this, dots become thin bars so all fit
 
 const track = document.getElementById("timeline");
 const label = document.getElementById("timeline-label");
@@ -11,6 +12,7 @@ let positions = []; // where each dot sits along the line, 0-100
 export function drawTimeline(frames, currentIndex, onPick) {
   positions = placeByDate(frames);
   track.replaceChildren();
+  track.classList.toggle("crowded", frames.length > CROWDED);
   frames.forEach((frame, index) => {
     const dot = document.createElement("button");
     dot.type = "button";
@@ -43,10 +45,12 @@ function placeByDate(frames) {
   if (frames.length < 2) return frames.map(() => 50);
   const first = frames[0].mjd;
   const span = frames.at(-1).mjd - first || 1;
+  // With very many frames there is no room for the full gap; share the line evenly.
+  const gap = Math.min(MIN_GAP_PERCENT, 100 / frames.length);
   const placed = [];
   for (const frame of frames) {
     const byDate = ((frame.mjd - first) / span) * 100;
-    const afterPrevious = placed.length ? placed.at(-1) + MIN_GAP_PERCENT : 0;
+    const afterPrevious = placed.length ? placed.at(-1) + gap : 0;
     placed.push(Math.max(byDate, afterPrevious));
   }
   const overflow = placed.at(-1) / 100; // nudging may have pushed past the end

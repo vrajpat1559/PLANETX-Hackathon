@@ -12,17 +12,29 @@ This file only defines the web addresses (routes). The real work lives in:
 Run from the repo root:   uvicorn backend.main:app --reload
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import numpy as np
+from astropy import log as astropy_log
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import archive, config, imaging, s3, spherex, targets, wise
-from .visits import describe_visit, group_into_visits
+from . import archive, cache, config, imaging, s3, spherex, targets, wise
+from .visits import describe_visit, group_into_visits, spread_out
 
-app = FastAPI(title="SPHEREx Blink")
+# astropy prints a long notice for every SPHEREx header it reads; hide those
+# so real warnings stay visible in the server log.
+astropy_log.setLevel("WARNING")
+
+@asynccontextmanager
+async def lifespan(app):
+    cache.trim()  # start under the size limit, whatever was left from last time
+    yield
+
+
+app = FastAPI(title="SPHEREx Blink", lifespan=lifespan)
 
 # The same three query parameters describe "which patch of sky" everywhere.
 RaParam = Query(ge=0, le=360, description="Right ascension, degrees")
@@ -128,6 +140,7 @@ def stack(
     urls = [e["url"] for e in visits[visit] if e["detector"] == detector]
     if not urls:
         raise HTTPException(404, f"No {detector} exposures in this visit")
+    urls = spread_out(urls, config.SPHEREX_MAX_EXPOSURES_PER_VISIT)
 
     result = imaging.stack_exposures(urls, ra, dec, fov)
     return _image_response(result["image"], {"X-Exposures-Used": result["used"]})

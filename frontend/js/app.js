@@ -35,12 +35,14 @@ const state = {
   visits: [],         // SPHEREx visits to the target
   exposures: [],      // every single SPHEREx exposure, all bands
   wiseVisits: [],     // WISE visits to the target, 2010-2024
+  wiseVisitsReady: Promise.resolve(),  // settles once wiseVisits has been filled in
   // The images being shown, oldest first. Each frame is
   // { telescope, label, band, detail, mjd, status, pixels, size, fetch }.
   frames: [],
   current: 0,         // index of the frame on screen
   noise: null,        // sky noise of the first frame; every frame is drawn against it
   timer: null,        // play interval
+  lookupId: 0,        // goes up on every search, so a slow old name lookup cannot win
   loadId: 0,          // goes up on every reload so slow old loads are ignored
 };
 
@@ -57,7 +59,10 @@ async function go(text) {
   stop();
   try {
     setStatus("Looking up the target…");
-    await openTarget(await api.resolve(text));
+    const request = ++state.lookupId;
+    const target = await api.resolve(text);
+    if (request !== state.lookupId) return;  // a newer search has started since
+    await openTarget(target);
   } catch (error) {
     setStatus(`Could not load that target: ${error.message}`, true);
   }
@@ -69,13 +74,17 @@ async function openTarget(target) {
   $("note").hidden = !target.note;
 
   setStatus(`Searching the archive at RA ${target.ra.toFixed(4)}°, Dec ${target.dec.toFixed(4)}°…`);
-  const [found, wiseVisits] = await Promise.all([
-    api.observations(target.ra, target.dec),
-    api.wiseVisits(target.ra, target.dec).catch(() => []), // history is a bonus; carry on without it
-  ]);
+  // The WISE list can take 10 seconds for a new target. Ask for it now, but do
+  // not wait: load() adds the WISE images to the timeline when the list arrives.
+  state.wiseVisits = [];
+  state.wiseVisitsReady = api.wiseVisits(target.ra, target.dec)
+    .catch(() => [])  // history is a bonus; carry on without it
+    .then((visits) => { if (state.target === target) state.wiseVisits = visits; });
+
+  const found = await api.observations(target.ra, target.dec);
+  if (state.target !== target) return;  // the user has already moved on to another target
   state.visits = found.visits;
   state.exposures = found.exposures;
-  state.wiseVisits = wiseVisits;
 
   if (!state.exposures.length) {
     state.frames = [];
@@ -169,10 +178,9 @@ function load() {
   writeAddressBar();
 
   const fromSpherex = byVisit ? visitFrames(detector) : exposureFrames(detector);
-  const fromWise = historyFrames(detector);
-  state.frames = [...fromWise, ...fromSpherex];  // shown oldest first
-  const queue = [...fromSpherex, ...fromWise];   // but SPHEREx is fetched first
-  state.current = state.frames.indexOf(fromSpherex[0]);
+  state.frames = [...fromSpherex];
+  const queue = [...fromSpherex];  // frames still to fetch
+  state.current = 0;
   state.noise = null;
   drawTimeline(state.frames, state.current, pick);
   drawScaleBar();
@@ -182,18 +190,20 @@ function load() {
     return;
   }
 
-  const total = queue.length;
+  let total = queue.length;
   let finished = 0;
   const report = () => {
     const done = finished === total;
     setStatus(
       `${state.target.label}: loaded ${finished} of ${total} images.` +
-      (done ? "" : " An image that has not been requested before takes about 20 seconds.")
+      (done ? "" : " An image nobody has asked for before takes a few seconds.")
     );
   };
   report();
 
+  let running = 0;
   const worker = async () => {
+    running++;
     while (queue.length && stillCurrent()) {
       const frame = queue.shift();
       try {
@@ -202,6 +212,7 @@ function load() {
         frame.pixels = image.pixels;
         frame.size = image.size;
         if (image.wavelength) frame.detail = `${image.wavelength.toFixed(2)} µm at the target`;
+        if (image.exposuresUsed > 1) frame.detail = `${image.exposuresUsed} exposures combined`;
         frame.status = "ready";
         state.noise ??= noiseLevel(image.pixels);
       } catch {
@@ -213,10 +224,28 @@ function load() {
       drawTimeline(state.frames, state.current, pick);
       afterFrameArrives();
     }
+    running--;
   };
-  // Combined images go one at a time: each already uses every archive connection we allow.
-  const workers = byVisit ? 1 : EXPOSURES_LOADED_AT_ONCE;
-  for (let i = 0; i < workers; i++) worker();
+  // Combined images go one at a time: building each one already keeps the server busy.
+  const workerCount = byVisit ? 1 : EXPOSURES_LOADED_AT_ONCE;
+  const startWorkers = () => { while (running < workerCount && queue.length) worker(); };
+  startWorkers();
+
+  // SPHEREx is under way. Once the WISE list is in, put its images at the
+  // front of the timeline (they are older) and fetch them after SPHEREx.
+  state.wiseVisitsReady.then(() => {
+    if (!stillCurrent()) return;
+    const fromWise = historyFrames(detector);
+    if (!fromWise.length) return;
+    const onScreen = state.frames[state.current];
+    state.frames = [...fromWise, ...state.frames];
+    state.current = state.frames.indexOf(onScreen);
+    queue.push(...fromWise);
+    total += fromWise.length;
+    report();
+    drawTimeline(state.frames, state.current, pick);
+    startWorkers();
+  });
 }
 
 function afterFrameArrives() {
@@ -400,7 +429,7 @@ async function start() {
   $("cross").addEventListener("change", () => show(state.current));
 
   document.addEventListener("keydown", (event) => {
-    if (event.target.matches("input[type=text], select")) return;
+    if (event.target.matches?.("input[type=text], select")) return;  // typing, not a shortcut
     if (event.key === "ArrowLeft") { stop(); step(-1); }
     else if (event.key === "ArrowRight") { stop(); step(1); }
     else if (event.key === " ") { event.preventDefault(); state.timer ? stop() : play(); }

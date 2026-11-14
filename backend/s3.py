@@ -35,7 +35,7 @@ from astropy.io import fits
 from astropy.io.fits.hdu.compressed import _codecs
 from astropy.wcs import WCS
 
-from . import config, spherex
+from . import config, spherex, wise
 
 BLOCK = 2880                   # FITS pads everything to multiples of this
 HEADER_GUESS = 14 * BLOCK      # one request usually holds a whole header
@@ -107,6 +107,47 @@ def read_cutout(irsa_url: str, ra: float, dec: float, width_deg: float) -> dict:
         "wavelength_um": wavelength,
         "bandwidth_um": bandwidth,
     }
+
+
+def download_neowise(irsa_url: str, tries: int = 2) -> bytes:
+    """A whole NEOWISE exposure (a 4 MB FITS file) given its IRSA address."""
+    url = config.S3_NEOWISE_PREFIX + irsa_url[len(config.IRSA_NEOWISE_PREFIX):]
+    for attempt in range(tries):
+        try:
+            response = _session.get(url, timeout=(5, 30))
+            if response.status_code == 200:
+                return response.content
+            problem = f"S3 answered {response.status_code}"
+        except requests.RequestException as error:
+            problem = f"{type(error).__name__} from S3"
+    raise OSError(problem)
+
+
+def read_wise_2010(irsa_url: str, ra: float, dec: float, width_deg: float) -> dict:
+    """The region around (ra, dec) of a 2010 WISE tile, read from S3.
+
+    Same return value as wise.read_cutout(). A tile is one plain image, so
+    this is the simple case: read the header, work out which rows cover the
+    field, and download just those rows.
+    """
+    url = config.S3_WISE_2010_PREFIX + irsa_url[len(config.IRSA_WISE_2010_PREFIX):]
+    header, data_start, _ = _parse_header(url, 0, _read_range(url, 0, HEADER_GUESS))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        full_grid = WCS(header)
+        cx, cy = full_grid.all_world2pix(ra, dec, 0)
+        pixel_arcsec = full_grid.proj_plane_pixel_scales()[0].to_value("arcsec")
+
+    half = width_deg * 3600 / pixel_arcsec / 2 + 2
+    nx, ny = header["NAXIS1"], header["NAXIS2"]
+    x0, x1 = max(0, int(cx - half)), min(nx, int(cx + half) + 2)
+    y0, y1 = max(0, int(cy - half)), min(ny, int(cy + half) + 2)
+    if x0 >= x1 or y0 >= y1:
+        raise NoOverlap()
+
+    pixels = _read_box(url, header, data_start, (x0, x1, y0, y1))
+    return wise.to_brightness(header, pixels, full_grid[y0:y1, x0:x1])
 
 
 # ---------- reading pieces of a FITS file over HTTP ----------

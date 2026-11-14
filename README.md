@@ -26,10 +26,12 @@ of exposures over a few weeks. We call one burst a **visit**.
 3. **Build one image per visit.** For the chosen detector, every exposure in
    the visit is cut out, lined up on a shared north-up grid, and combined by
    taking the median. This is much cleaner than any single exposure.
-   SPHEREx pixels are read straight from NASA's public copy of the archive on
-   Amazon S3, downloading only the rows that cover the field (about 2 s per
-   exposure instead of about 10 s through IRSA's cutout service, which is kept
-   as an automatic fallback and is still used for WISE).
+   Pixels are read straight from NASA's public copy of the archive on Amazon
+   S3, downloading only what covers the field. IRSA's own cutout service is
+   kept as an automatic fallback: it is slower and starts refusing requests
+   (HTTP 503) when asked for many cutouts in a row. At most 40 exposures go
+   into one image; the deep fields at the ecliptic poles have over 1,000 per
+   visit.
 4. **Blink.** The browser receives real brightness values (not finished
    pictures), so it can blink, subtract and add images with one shared
    brightness scale. "Highlight changes" paints whatever got brighter since
@@ -40,6 +42,7 @@ of exposures over a few weeks. We call one burst a **visit**.
    from WISE, an older NASA infrared telescope: one from 2010 and one for each
    visit from 2014 to 2024. They are put on the same grid and converted to the
    same brightness units, so a fast-moving star visibly walks across the frame.
+   WISE images are read from S3 as well.
 
 Why combine per visit instead of blinking raw exposures? SPHEREx's filters
 change colour across each detector, so the same star is seen at a different
@@ -68,6 +71,15 @@ frontend/
   js/timeline.js   the row of dots under the picture
   js/starfield.js  the decorative star background
 ```
+
+## The cache
+
+Finished pictures are kept in `.cache/` so a target that has been viewed once
+reloads in about a second. The folder is limited to 1000 MB (`CACHE_MAX_MB`
+in `backend/config.py`, or the environment variable of the same name). When
+it fills up, the files that have gone longest without being used are deleted,
+raw exposures before finished pictures. It is always safe to delete the
+whole folder.
 
 ## Linking to a view
 

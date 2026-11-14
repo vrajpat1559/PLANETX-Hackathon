@@ -26,7 +26,9 @@ class LookupUnavailable(Exception):
 
 
 _TWO_NUMBERS = re.compile(r"^([+-]?\d+(?:\.\d+)?)[\s,]+([+-]?\d+(?:\.\d+)?)$")
-_LOOKS_LIKE_COORDINATES = re.compile(r"^[\d\s.:+\-hmsd°'\",]+$", re.IGNORECASE)
+# Starts with a digit or sign, and holds only what coordinates are written with.
+# (Without the first rule, names like "M31" or "HD 1" would pass: m, h, d and s are unit letters.)
+_LOOKS_LIKE_COORDINATES = re.compile(r"^[+\-\d][\d\s.:+\-hmsd°'\",]*$", re.IGNORECASE)
 
 
 def resolve(text: str) -> dict:
@@ -44,23 +46,26 @@ def resolve(text: str) -> dict:
         try:
             position = SkyCoord(text.replace(",", " "), unit=(u.hourangle, u.deg))
         except ValueError:
-            raise TargetNotFound(f"Could not read '{text}' as coordinates") from None
-        return {"ra": position.ra.deg, "dec": position.dec.deg, "label": text, "note": ""}
+            raise TargetNotFound(
+                f"Could not read '{text}' as coordinates. "
+                "Try '08h55m10.8s -7d14m42s' or '133.795 -7.245'."
+            ) from None
+        return {"ra": float(position.ra.deg), "dec": float(position.dec.deg), "label": text, "note": ""}
 
     return _look_up_name(text)
 
 
 def _look_up_name(name: str) -> dict:
-    reached_a_server = False
+    # The catalogues list the Gliese nearby-star catalogue as "GJ 876", not "Gliese 876".
+    name = re.sub(r"^gliese\s*", "GJ ", name, flags=re.IGNORECASE)
     for base_url in config.SESAME_URLS:
         try:
             found = _ask_sesame(base_url, name)
         except requests.RequestException:
             continue
-        reached_a_server = True
         if found:
             return _move_to_today(name, **found)
-    if reached_a_server:
+        # The mirrors share one catalogue: if one does not know the name, none will.
         raise TargetNotFound(f"Could not find an object named '{name}'")
     raise LookupUnavailable("The name lookup service is not responding")
 
@@ -81,6 +86,8 @@ def _ask_sesame(base_url: str, name: str) -> dict | None:
                 break
             elif line.startswith(("%X", "#B", "#=")) and "ra" in found:
                 break  # past the place where a %P line would have been
+            elif line.startswith("#====Done"):
+                break  # end of the reply; do not wait for the server to hang up
     return found if "ra" in found else None
 
 

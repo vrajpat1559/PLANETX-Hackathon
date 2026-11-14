@@ -17,7 +17,7 @@ import time
 import requests
 
 from . import config
-from .cache import cache_file, is_fresh
+from .cache import cache_file, is_fresh, only_one_builder, save_text
 
 
 class ArchiveError(Exception):
@@ -43,10 +43,12 @@ def _get(url: str, params: dict, timeout: int = 120, tries: int = 4) -> requests
             if response.status_code == 200:
                 return response
             problem = f"HTTP {response.status_code}"
+            if 400 <= response.status_code < 500:
+                break  # "no such file" or "bad request" will not get better by asking again
         except requests.RequestException as error:
             problem = type(error).__name__
         time.sleep(1.5 * (attempt + 1))
-    raise ArchiveError(f"The image archive did not answer after {tries} tries ({problem})")
+    raise ArchiveError(f"The image archive could not provide this ({problem})")
 
 
 def is_archive_image_url(url: str) -> bool:
@@ -67,9 +69,15 @@ def search_images(where, ra: float, dec: float, cache_hours: float) -> list[dict
     expires, the old answer is used rather than failing.
     """
     path = _search_cache_file(where, ra, dec)
-    if is_fresh(path, cache_hours):
-        return json.loads(path.read_text())
+    # If several visitors open the same new target together, ask IRSA once.
+    with only_one_builder(path):
+        if is_fresh(path, cache_hours):
+            return json.loads(path.read_text())
+        return _search_images(where, ra, dec, path)
 
+
+def _search_images(where, ra: float, dec: float, path) -> list[dict]:
+    """The work behind search_images(): ask IRSA and save the answer."""
     if isinstance(where, dict):
         filters = where
     else:
@@ -94,7 +102,7 @@ def search_images(where, ra: float, dec: float, cache_hours: float) -> list[dict
         if row.get("dataproduct_subtype") == "science"
         and is_archive_image_url(row.get("access_url", ""))
     ]
-    path.write_text(json.dumps(rows))
+    save_text(path, json.dumps(rows))
     return rows
 
 
