@@ -9,8 +9,10 @@
 
 import { api } from "./api.js";
 import { average, noiseLevel, paintDifference, paintHighlights, paintImage } from "./picture.js";
-import { drawBackground } from "./blackhole.js";
+import { drawBackground } from "./solarsystem.js"; // or "./pixelplanet.js", "./nightsky.js", "./spacecraft.js", "./blackhole.js"
 import { drawTimeline, markCurrent } from "./timeline.js";
+import { initSkyView, layoutSky, resetSkyView, zoomBy, ZOOM_BUTTON_STEP } from "./skyview.js";
+import { drawSky, setSmooth } from "./render.js";
 
 // The targets named in the challenge.
 const PRESETS = [
@@ -67,6 +69,11 @@ async function go(text) {
 
 async function openTarget(target) {
   state.target = target;
+  // A new target: back to the landing scene until its first image arrives,
+  // with the player bar showing the images as they load.
+  document.body.classList.remove("has-image");
+  document.body.classList.add("has-target");
+  resetSkyView();
   $("note").textContent = target.note || "";
   $("note").hidden = !target.note;
 
@@ -279,9 +286,15 @@ function show(index) {
   const viewMode = $("view-mode").value;
   let caption;
 
-  if (viewMode === "sum" && ready.length > 1) {
-    paintImage(context, average(ready.map((f) => f.pixels)), frame.size, state.noise, whiteLevel());
-    caption = `${ready.length} images added together`;
+  // Deep image: average every loaded image from the same telescope. Random
+  // noise cancels out (by about the square root of the number of images), so
+  // faint stars and galaxies stand out. Mixing telescopes would blur it, since
+  // WISE and SPHEREx differ in sharpness and colour.
+  const sameTelescope = ready.filter((f) => f.telescope === frame.telescope && f.size === frame.size);
+  if (viewMode === "sum" && sameTelescope.length > 1) {
+    paintImage(context, average(sameTelescope.map((f) => f.pixels)), frame.size, state.noise, whiteLevel());
+    const name = frame.telescope === "wise" ? "WISE" : "SPHEREx";
+    caption = `Deep image · ${sameTelescope.length} ${name} images combined`;
   } else if (viewMode === "difference" && frame !== first) {
     paintDifference(context, frame.pixels, first.pixels, frame.size, state.noise, whiteLevel());
     caption = `${frame.label} minus ${first.label}`;
@@ -293,7 +306,7 @@ function show(index) {
       caption = `${frame.label} · previous image is from another telescope, nothing highlighted`;
     } else {
       const spots = paintHighlights(context, frame.pixels, previous.pixels, frame.size, state.noise, whiteLevel());
-      caption = `${frame.label} vs ${previous.label}: ${spots} change${spots === 1 ? "" : "s"} · green brighter, magenta fainter`;
+      caption = `${frame.label} vs ${previous.label}: ${spots} change${spots === 1 ? "" : "s"} · green flux increase, magenta flux decrease`;
     }
   } else {
     paintImage(context, frame.pixels, frame.size, state.noise, whiteLevel());
@@ -309,6 +322,10 @@ function show(index) {
   $("crosshair").hidden = !$("cross").checked;
   $("compass").hidden = false;
   markCurrent(state.frames, index);
+  // The image now fills the page (and the landing scene fades away).
+  document.body.classList.add("has-image");
+  drawSky(context.canvas);  // the picture as displayed: smoothed and sharpened, or raw pixels
+  layoutSky();
 }
 
 // Move to the next (+1) or previous (-1) frame that has finished loading.
@@ -327,11 +344,15 @@ function pick(index) {
 }
 
 // A bar in the corner showing how big 1, 2 or 5 arcminutes is at this zoom.
+// A bar showing a round length on the sky, sized for the current zoom.
 function drawScaleBar() {
-  const fieldArcmin = Number($("fov").value) * 60;
-  const length = [5, 2, 1].find((arcmin) => arcmin <= fieldArcmin * 0.2) ?? 1;
-  $("scale-bar").style.width = `${(length / fieldArcmin) * $("view").clientWidth}px`;
-  $("scale-label").textContent = `${length} arcmin`;
+  const fieldArcmin = Number($("fov").value) * 60;      // width of the whole picture
+  const pictureWidth = $("sky").clientWidth;            // how wide it is drawn, in screen pixels
+  if (!pictureWidth) return;
+  const visibleArcmin = fieldArcmin * Math.min(1, $("stage").clientWidth / pictureWidth);
+  const length = [10, 5, 2, 1, 0.5, 0.25, 0.1].find((arcmin) => arcmin <= visibleArcmin * 0.15) ?? 0.1;
+  $("scale-bar").style.width = `${(length / fieldArcmin) * pictureWidth}px`;
+  $("scale-label").textContent = length >= 1 ? `${length} arcmin` : `${Math.round(length * 60)} arcsec`;
   $("scale").hidden = false;
 }
 
@@ -395,10 +416,23 @@ function readAddressBar() {
 
 // ---------- wiring ----------
 
+
+// A random position, spread evenly over the whole sky. (Picking Dec uniformly
+// would crowd the poles; taking the arcsine of a uniform number gives every
+// patch of sky the same chance.) Returned as "RA Dec" in degrees.
+function randomSpot() {
+  const ra = Math.random() * 360;
+  const dec = (Math.asin(2 * Math.random() - 1) * 180) / Math.PI;
+  return `${ra.toFixed(2)} ${dec.toFixed(2)}`;
+}
+
+// Animated background art (see the import at the top). Off = plain deep black.
+const SHOW_BACKGROUND_ART = true;
+
 async function start() {
-  drawBackground($("starfield"));
+  if (SHOW_BACKGROUND_ART) drawBackground($("starfield"));
   window.addEventListener("resize", () => {
-    drawBackground($("starfield"));
+    if (SHOW_BACKGROUND_ART) drawBackground($("starfield"));
     if (state.frames.length) drawScaleBar();
   });
 
@@ -420,6 +454,17 @@ async function start() {
     });
     $("presets").append(button);
   }
+  const surprise = document.createElement("button");
+  surprise.type = "button";
+  surprise.className = "random";
+  surprise.textContent = "Random spot";
+  surprise.title = "Jump to a random patch of sky";
+  surprise.addEventListener("click", () => {
+    const spot = randomSpot();
+    $("target").value = spot;
+    go(spot);
+  });
+  $("presets").append(surprise);
 
   $("search").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -438,13 +483,75 @@ async function start() {
   $("cross").addEventListener("change", () => show(state.current));
 
   document.addEventListener("keydown", (event) => {
-    if (event.target.matches("input[type=text], select")) return;
+    if (event.key === "Escape") { setDrawer(false); setAbout(false); return; }
+    // Leave typing, menus, sliders and the settings drawer alone; space on a
+    // button already presses that button.
+    if (!(event.target instanceof Element)) return;
+    if (event.target.closest("input, select, textarea, #drawer, #about")) return;
     if (event.key === "ArrowLeft") { stop(); step(-1); }
     else if (event.key === "ArrowRight") { stop(); step(1); }
-    else if (event.key === " ") { event.preventDefault(); state.timer ? stop() : play(); }
+    else if (event.key === " " && !event.target.closest("button")) { event.preventDefault(); state.timer ? stop() : play(); }
   });
 
+  initSkyView(() => { if (state.frames.length) drawScaleBar(); });
+  $("zoom-in").addEventListener("click", () => zoomBy(ZOOM_BUTTON_STEP));
+  $("zoom-out").addEventListener("click", () => zoomBy(1 / ZOOM_BUTTON_STEP));
+  $("render-mode").addEventListener("change", () => {
+    setSmooth($("render-mode").value === "smooth");
+    show(state.current);
+  });
+
+  // The About panel: how it works, what to look for, the mission and the data.
+  $("about-toggle").addEventListener("click", () => setAbout(true));
+  $("about-close").addEventListener("click", () => setAbout(false));
+  $("about").addEventListener("click", (event) => { if (event.target === $("about")) setAbout(false); });
+
+  // The settings drawer: opened by the button in the top bar.
+  $("settings-toggle").addEventListener("click", () => setDrawer(!$("drawer").classList.contains("open")));
+  $("settings-close").addEventListener("click", () => setDrawer(false));
+  document.addEventListener("pointerdown", (event) => {
+    if (!$("drawer").classList.contains("open")) return;
+    if (!event.target.closest("#drawer, #settings-toggle")) setDrawer(false);
+  });
+
+  // The Highlight button in the player bar is a shortcut for View: Highlight changes.
+  $("highlight-toggle").addEventListener("click", () => {
+    $("view-mode").value = $("view-mode").value === "highlight" ? "image" : "highlight";
+    syncHighlightButton();
+    show(state.current);
+  });
+  $("deep-toggle").addEventListener("click", () => {
+    $("view-mode").value = $("view-mode").value === "sum" ? "image" : "sum";
+    syncHighlightButton();
+    show(state.current);
+  });
+  $("view-mode").addEventListener("input", syncHighlightButton);
+
   readAddressBar();
+  syncHighlightButton();
+}
+
+function setAbout(open) {
+  if ($("about").hidden === !open) return;
+  $("about").hidden = !open;
+  $("about-toggle").setAttribute("aria-expanded", String(open));
+  (open ? $("about-close") : $("about-toggle")).focus({ preventScroll: true });
+}
+
+function setDrawer(open) {
+  const drawer = $("drawer");
+  if (drawer.classList.contains("open") === open) return;
+  drawer.classList.toggle("open", open);
+  drawer.inert = !open;  // closed: its controls can't be reached with Tab
+  $("settings-toggle").setAttribute("aria-expanded", String(open));
+  (open ? $("detector") : $("settings-toggle")).focus({ preventScroll: true });
+}
+
+// The Deep and Highlight buttons are shortcuts for the View setting; keep them in step with it.
+function syncHighlightButton() {
+  $("highlight-toggle").setAttribute("aria-pressed", String($("view-mode").value === "highlight"));
+  $("deep-toggle").setAttribute("aria-pressed", String($("view-mode").value === "sum"));
+  document.body.dataset.view = $("view-mode").value;  // lets the key brighten the Highlight colours
 }
 
 start();

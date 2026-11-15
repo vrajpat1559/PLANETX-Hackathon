@@ -34,6 +34,9 @@ function query(parameters) {
 export const api = {
   config: () => getJSON("/api/config"),
 
+  // How current NASA's SPHEREx archive is -> { newest_week, uploaded, ... }
+  latest: () => getJSON("/api/latest"),
+
   // What the user typed -> { ra, dec, label, note }
   resolve: (text) => getJSON(`/api/resolve?${query({ q: text })}`),
 

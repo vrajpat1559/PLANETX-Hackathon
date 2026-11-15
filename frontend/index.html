@@ -4,136 +4,253 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SPHEREx Blink</title>
+  <meta name="description" content="Flip between NASA SPHEREx infrared images of the same patch of sky taken on different dates, and see what moved or changed.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- Decorative star background, drawn by js/starfield.js -->
+  <!-- Landing scene: animated solar system and stars (js/solarsystem.js).
+       Fades away once a telescope image is loaded. -->
   <canvas id="starfield" aria-hidden="true"></canvas>
 
-  <div class="page">
+  <!-- The first screen: the telescope image fills it, with the controls floating
+       on top. Ctrl/Cmd + scroll (or pinch) zooms, drag pans, double-click resets
+       (js/skyview.js). Plain scrolling moves down to the overview. -->
+  <main class="screen" id="screen">
+  <div class="stage" id="stage">
+    <!-- #sky is what you see (smoothed and sharpened, js/render.js);
+         #view holds the original pixels that all the measurements use. -->
+    <canvas id="sky" role="img" aria-label="Telescope image"></canvas>
+    <canvas id="view" width="64" height="64" hidden></canvas>
+    <div class="reticle" id="crosshair" hidden></div>
+  </div>
+
+  <!-- Everything else floats over the image. -->
+  <div class="hud">
+
     <header class="topbar">
-      <div class="brand">
-        <h1>SPHEREx <span>Blink</span></h1>
-        <p>Watch the infrared sky change</p>
+      <h1 class="logo">SPHERE<span class="accent">x</span><br><span class="accent">B</span>link</h1>
+
+      <div class="finder">
+        <form id="search" class="search">
+          <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg>
+          <input id="target" type="text" autocomplete="off" aria-label="Object name or coordinates"
+                 placeholder="Search a star, galaxy or coordinates">
+          <button type="submit" class="primary">Look</button>
+        </form>
+        <nav class="presets" id="presets" aria-label="Example targets">
+          <span class="eyebrow">Try</span>
+        </nav>
       </div>
 
-      <form id="search" class="search">
-        <input id="target" type="text" autocomplete="off" aria-label="Object name or coordinates"
-               placeholder="Object name or coordinates, e.g. Barnard's Star or 08h55m10.8s -7d14m42s">
-        <button type="submit" class="primary">Look</button>
-      </form>
+      <div class="top-actions">
+        <button id="about-toggle" class="icon-button" type="button" aria-label="About" title="About"
+                aria-expanded="false" aria-controls="about">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>
+        </button>
+        <button id="settings-toggle" class="icon-button" type="button" aria-label="Settings" title="Settings"
+                aria-expanded="false" aria-controls="drawer">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+        </button>
+      </div>
     </header>
 
-    <nav class="presets" id="presets" aria-label="Example targets">
-      <span class="eyebrow">Try</span>
-    </nav>
+    <!-- Shown on the landing scene, before any image -->
+    <div class="empty" id="empty">
+      <p>Watch the sky change</p>
+      <p>NASA's SPHEREx telescope photographs the whole sky in 102 infrared colours every
+         six months. Search any star or pick an example, then press Play: anything that
+         moved, brightened or faded jumps out.</p>
+    </div>
 
-    <main class="layout">
-      <aside class="rail">
-        <section>
-          <h2>Picture</h2>
-          <label>Infrared band
-            <select id="detector"></select>
-          </label>
-          <label>Field width
-            <select id="fov">
-              <option value="0.1">0.1° · 6 arcmin</option>
-              <option value="0.15">0.15° · 9 arcmin</option>
-              <option value="0.25">0.25° · 15 arcmin</option>
-              <option value="0.5">0.5° · 30 arcmin</option>
-            </select>
-          </label>
-        </section>
+    <!-- What's loaded, and any note about the target -->
+    <aside class="info-left">
+      <p id="status" role="status">Pick a target to begin.</p>
+      <p id="note" class="note" hidden></p>
+    </aside>
 
-        <section>
-          <h2>Time</h2>
-          <label>SPHEREx images
-            <select id="mode">
-              <option value="visits">One combined image per visit</option>
-              <option value="exposures">Single exposures</option>
-            </select>
-          </label>
-          <label id="limit-label" hidden>How many
-            <select id="limit">
-              <option value="8">8 spread over time</option>
-              <option value="16">16 spread over time</option>
-              <option value="0">All</option>
-            </select>
-          </label>
-          <label>Older history from WISE
-            <select id="history">
-              <option value="some">5 moments since 2010</option>
-              <option value="all">Every visit since 2010 (slow)</option>
-              <option value="off">Off, SPHEREx only</option>
-            </select>
-          </label>
-        </section>
+    <!-- Labels on the image -->
+    <div class="zoom-buttons" role="group" aria-label="Zoom">
+      <button id="zoom-in" type="button" class="icon-button" aria-label="Zoom in" title="Zoom in">+</button>
+      <button id="zoom-out" type="button" class="icon-button" aria-label="Zoom out" title="Zoom out">−</button>
+    </div>
+    <div class="compass" id="compass" aria-hidden="true" hidden><span class="north">N</span><span class="east">E</span></div>
 
-        <section>
-          <h2>Display</h2>
-          <label>View
-            <select id="view-mode">
-              <option value="image">Image</option>
-              <option value="highlight">Highlight changes since previous image</option>
-              <option value="difference">Change since first image</option>
-              <option value="sum">All images added together</option>
-            </select>
-          </label>
-          <label>Brightness
-            <input id="brightness" type="range" min="0" max="100" value="50">
-          </label>
-          <label class="check"><input id="cross" type="checkbox" checked> Mark the target</label>
-        </section>
 
-        <p id="status" role="status">Pick a target to begin.</p>
-        <p id="note" class="note" hidden></p>
-      </aside>
+    <div class="bottom">
+      <div class="readout">
+        <div class="caption"><div class="badge" id="badge" hidden></div><div class="stamp" id="stamp" hidden></div></div>
+        <p class="keys">Ctrl/⌘ + scroll to zoom · drag to move · ← → step</p>
+        <div class="scale" id="scale" hidden><span id="scale-bar"></span><span id="scale-label"></span></div>
+      </div>
 
-      <section class="viewer">
-        <div class="stage">
-          <canvas id="view" width="64" height="64"></canvas>
+      <div class="player" role="group" aria-label="Playback">
+        <button id="prev" type="button" class="round" title="Previous image (left arrow)" aria-label="Previous image">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12.5 4.5L7 10l5.5 5.5"/></svg>
+        </button>
+        <button id="play" type="button" class="primary" title="Space bar">Play</button>
+        <button id="next" type="button" class="round" title="Next image (right arrow)" aria-label="Next image">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 4.5L13 10l-5.5 5.5"/></svg>
+        </button>
 
-          <div class="empty" id="empty">
-            <p>Pick a target above.</p>
-            <p>You will see the same patch of sky on different dates. Watch for anything that jumps.</p>
-          </div>
-
-          <div class="badge" id="badge" hidden></div>
-          <div class="compass" id="compass" aria-hidden="true" hidden><span class="north">N</span><span class="east">E</span></div>
-          <div class="reticle" id="crosshair" hidden></div>
-          <div class="stamp" id="stamp" hidden></div>
-          <div class="scale" id="scale" hidden><span id="scale-bar"></span><span id="scale-label"></span></div>
+        <div class="legend" aria-label="Key">
+          <span><span class="key spherex"></span>SPHEREx</span>
+          <span><span class="key wise"></span>WISE</span>
+          <span class="change-key"><span class="swatch brighter"></span>Flux increase</span>
+          <span class="change-key"><span class="swatch fainter"></span>Flux decrease</span>
         </div>
 
-        <div class="transport">
-          <button id="prev" type="button" title="Previous image (left arrow)">◀</button>
-          <button id="play" type="button" class="primary" title="Space bar">Play</button>
-          <button id="next" type="button" title="Next image (right arrow)">▶</button>
-          <label class="speed">Speed
-            <input id="speed" type="range" min="1" max="10" value="6">
-          </label>
-        </div>
+        <div class="timeline" id="timeline" role="group" aria-label="Images by date, oldest first"></div>
 
-        <div class="timeline">
-          <div class="timeline-label" id="timeline-label"></div>
-          <div class="timeline-track" id="timeline"></div>
-          <div class="timeline-ends"><span id="timeline-start"></span><span id="timeline-end"></span></div>
-        </div>
+        <button id="deep-toggle" type="button" class="toggle deep" aria-pressed="false"
+                title="Combine every image from this telescope into one deep, low-noise picture">Deep</button>
+        <button id="highlight-toggle" type="button" class="toggle" aria-pressed="false"
+                title="Colour where the flux changed since the previous image">Highlight</button>
+      </div>
+    </div>
+  </div>
+  <a class="scroll-cue" href="#overview">Overview ↓</a>
+  </main>
 
-        <p class="legend">
-          <span class="key spherex"></span>SPHEREx
-          <span class="key wise"></span>WISE (older telescope)
-          <span class="keys">← → step · space plays</span>
-        </p>
+  <!-- ===================== OVERVIEW =====================
+       Your page: replace the placeholder text below with your own writing.
+       Add or remove <section class="block"> blocks freely; each becomes a
+       glass card. Headings, paragraphs, lists and images all work here. -->
+  <section class="overview" id="overview" aria-labelledby="overview-title">
+    <header class="overview-head">
+      <p class="eyebrow">NASA Space Apps 2026 · Planet X and SPHEREx</p>
+      <h2 id="overview-title">Overview</h2>
+      <p class="overview-lede">One or two sentences that sum up the project. (Replace this text.)</p>
+    </header>
+
+    <div class="overview-grid">
+      <section class="block">
+        <h3>The challenge</h3>
+        <p>What the challenge asked for, and why it matters. (Replace this text.)</p>
       </section>
-    </main>
+      <section class="block">
+        <h3>What we built</h3>
+        <p>What SPHEREx Blink does and who it is for. (Replace this text.)</p>
+      </section>
+      <section class="block">
+        <h3>How it works</h3>
+        <p>The data, the pipeline and the clever parts. (Replace this text.)</p>
+      </section>
+      <section class="block">
+        <h3>What we found</h3>
+        <p>Interesting things the tool reveals, like Barnard's Star moving. (Replace this text.)</p>
+      </section>
+      <section class="block wide">
+        <h3>The team</h3>
+        <p>Who built it and what each person did. (Replace this text.)</p>
+      </section>
+    </div>
 
-    <footer>
-      Images: NASA SPHEREx and WISE, served by IRSA at Caltech/IPAC. Name lookup: CDS Sesame.
+    <footer class="overview-foot">
+      Images: NASA SPHEREx and WISE/NEOWISE, served by IRSA at Caltech/IPAC. Name lookup: CDS Sesame.
     </footer>
+  </section>
+
+  <!-- Settings, slid out from the right by the button in the top bar -->
+  <aside class="drawer" id="drawer" aria-label="Settings" inert>
+    <div class="drawer-head">
+      <h2>Settings</h2>
+      <button id="settings-close" type="button" class="icon-button" aria-label="Close settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <label>Infrared band
+      <select id="detector"></select>
+    </label>
+    <label>Field of view
+      <select id="fov">
+        <option value="0.1">0.1° · 6 arcmin</option>
+        <option value="0.15">0.15° · 9 arcmin</option>
+        <option value="0.25">0.25° · 15 arcmin</option>
+        <option value="0.5">0.5° · 30 arcmin</option>
+      </select>
+    </label>
+    <label>SPHEREx images
+      <select id="mode">
+        <option value="visits">One combined image per visit</option>
+        <option value="exposures">Single exposures</option>
+      </select>
+    </label>
+    <label id="limit-label" hidden>How many
+      <select id="limit">
+        <option value="8">8 spread over time</option>
+        <option value="16">16 spread over time</option>
+        <option value="0">All</option>
+      </select>
+    </label>
+    <label>WISE history (2010 to 2024)
+      <select id="history">
+        <option value="some">5 moments since 2010</option>
+        <option value="all">Every visit (slow)</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <label>View
+      <select id="view-mode">
+        <option value="image">Image</option>
+        <option value="highlight">Highlight changes since previous image</option>
+        <option value="difference">Change since first image</option>
+        <option value="sum">Deep image (all images from the telescope combined)</option>
+      </select>
+    </label>
+    <label>Display
+      <select id="render-mode">
+        <option value="smooth">Smooth and sharpened</option>
+        <option value="pixels">Raw pixels</option>
+      </select>
+    </label>
+    <label>Brightness
+      <input id="brightness" type="range" min="0" max="100" value="50">
+    </label>
+    <label>Playback speed
+      <input id="speed" type="range" min="1" max="10" value="6">
+    </label>
+    <label class="check"><input id="cross" type="checkbox" checked> Mark the target</label>
+  </aside>
+
+  <!-- About: how it works, what to look for, the mission and the data -->
+  <div class="about" id="about" role="dialog" aria-modal="true" aria-labelledby="about-title" hidden>
+    <div class="about-panel">
+      <div class="drawer-head">
+        <h2 id="about-title">About SPHEREx Blink</h2>
+        <button id="about-close" type="button" class="icon-button" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="about-grid">
+        <section>
+          <h3>How it works</h3>
+          <ol class="steps">
+            <li><b>Pick a spot.</b> Type a star's name or coordinates, or try one of the examples.</li>
+            <li><b>Line up the photos.</b> SPHEREx images of that spot from each visit are aligned and combined, with older WISE images going back to 2010.</li>
+            <li><b>Flip between them.</b> Press Play, or step with ← →. Switch on <i>Highlight</i> to colour what changed.</li>
+          </ol>
+        </section>
+        <section>
+          <h3>What to look for</h3>
+          <ul class="looks">
+            <li><b>A dot that walks.</b> A nearby star moving through space. Barnard's Star crosses the width of the full Moon in under 200 years.</li>
+            <li><b>A dot that brightens or dims.</b> A variable star. R Draconis swells and dims over about eight months.</li>
+            <li><b>Something there once, then gone.</b> An asteroid passing through, or a cosmic ray hitting the detector.</li>
+          </ul>
+          <p class="highlight-key"><span class="swatch brighter"></span>Flux increase since the previous image
+            <span class="swatch fainter"></span>Flux decrease</p>
+        </section>
+        <section class="wide">
+          <h3>About SPHEREx and the data</h3>
+          <p>SPHEREx launched in March 2025. Every six months it maps the whole sky in 102 infrared colours, from 0.75 to 5 microns, to study how the universe expanded after the Big Bang, how galaxies grew, and where the water and ice for new planets comes from.</p>
+          <p>Images come straight from NASA's archive (IRSA at Caltech/IPAC), read from its public copy on Amazon for speed. New SPHEREx images are published every week and show up here automatically. The older history comes from NASA's WISE and NEOWISE missions, 2010 to 2024.</p>
+          <p class="credits">Images: NASA SPHEREx and WISE/NEOWISE, served by IRSA at Caltech/IPAC. Name lookup: CDS Sesame. Built for NASA Space Apps 2026.</p>
+        </section>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="js/app.js"></script>
