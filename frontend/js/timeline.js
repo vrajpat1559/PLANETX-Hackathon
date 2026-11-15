@@ -1,58 +1,59 @@
-// The timeline under the picture: one dot per image, placed by date.
+// The timeline under the picture: a filmstrip with one small thumbnail per
+// image, oldest first. Click a thumbnail to show that image.
+//
+// Thumbnails are drawn from the brightness values already downloaded for the
+// main picture, so they cost no extra requests. Each is drawn once and kept on
+// its frame (frame.thumb).
 
-const MIN_GAP_PERCENT = 3.2; // dots closer than this are nudged apart so each can be clicked
-const CROWDED = 28;          // with more frames than this, dots become thin bars so all fit
+import { noiseLevel, paintImage } from "./picture.js";
 
-const track = document.getElementById("timeline");
-const label = document.getElementById("timeline-label");
+const THUMB_WHITE_LEVEL = 60; // a little brighter than the default, so small pictures read well
 
-let positions = []; // where each dot sits along the line, 0-100
+const strip = document.getElementById("timeline");
 
-// Rebuild every dot. `onPick(index)` is called when a dot is clicked.
+// Rebuild the strip. `onPick(index)` is called when a thumbnail is clicked.
 export function drawTimeline(frames, currentIndex, onPick) {
-  positions = placeByDate(frames);
-  track.replaceChildren();
-  track.classList.toggle("crowded", frames.length > CROWDED);
+  strip.replaceChildren();
   frames.forEach((frame, index) => {
-    const dot = document.createElement("button");
-    dot.type = "button";
-    dot.className = `dot ${frame.telescope} ${frame.status === "ready" ? "" : frame.status}`;
-    dot.style.left = `${positions[index]}%`;
-    dot.title = [frame.label, frame.detail].filter(Boolean).join(" · ");
-    dot.disabled = frame.status !== "ready";
-    dot.addEventListener("click", () => onPick(index));
-    track.append(dot);
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = `film ${frame.telescope} ${frame.status === "ready" ? "" : frame.status}`;
+    cell.title = [frame.label, frame.band, frame.detail].filter(Boolean).join(" · ");
+    cell.setAttribute("aria-label", `Show ${frame.label}`);
+    cell.disabled = frame.status !== "ready";
+    cell.addEventListener("click", () => onPick(index));
+
+    const picture = document.createElement("span");
+    picture.className = "film-picture";
+    if (frame.status === "ready") picture.append(thumbnail(frame));
+    const caption = document.createElement("span");
+    caption.className = "film-label";
+    caption.textContent = frame.label.replace(/^WISE /, "");
+    cell.append(picture, caption);
+    strip.append(cell);
   });
-  document.getElementById("timeline-start").textContent = frames[0]?.label ?? "";
-  document.getElementById("timeline-end").textContent = frames.length > 1 ? frames.at(-1).label : "";
   markCurrent(frames, currentIndex);
 }
 
-// Enlarge the dot of the image on screen and write its name above it.
+// Highlight the thumbnail of the image on screen, and keep it in view.
 export function markCurrent(frames, currentIndex) {
-  [...track.children].forEach((dot, index) => dot.classList.toggle("active", index === currentIndex));
-  const frame = frames[currentIndex];
-  label.replaceChildren();
-  if (!frame || frame.status !== "ready") return;
-  const text = document.createElement("span");
-  text.textContent = frame.label;
-  text.style.left = `${Math.max(8, Math.min(92, positions[currentIndex]))}%`; // keep it on the line
-  label.append(text);
+  [...strip.children].forEach((cell, index) => {
+    const active = index === currentIndex;
+    cell.classList.toggle("active", active);
+    if (active) cell.setAttribute("aria-current", "true");
+    else cell.removeAttribute("aria-current");
+  });
+  const active = strip.children[currentIndex];
+  if (active && strip.scrollWidth > strip.clientWidth) {
+    active.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
 }
 
-// Spread frames from 0 to 100 by date, then push apart any that would overlap.
-function placeByDate(frames) {
-  if (frames.length < 2) return frames.map(() => 50);
-  const first = frames[0].mjd;
-  const span = frames.at(-1).mjd - first || 1;
-  // With very many frames there is no room for the full gap; share the line evenly.
-  const gap = Math.min(MIN_GAP_PERCENT, 100 / frames.length);
-  const placed = [];
-  for (const frame of frames) {
-    const byDate = ((frame.mjd - first) / span) * 100;
-    const afterPrevious = placed.length ? placed.at(-1) + gap : 0;
-    placed.push(Math.max(byDate, afterPrevious));
+function thumbnail(frame) {
+  if (!frame.thumb) {
+    const canvas = document.createElement("canvas");
+    paintImage(canvas.getContext("2d"), frame.pixels, frame.size, noiseLevel(frame.pixels), THUMB_WHITE_LEVEL);
+    frame.thumb = canvas;
   }
-  const overflow = placed.at(-1) / 100; // nudging may have pushed past the end
-  return placed.map((position) => position / Math.max(1, overflow));
+  return frame.thumb;
 }

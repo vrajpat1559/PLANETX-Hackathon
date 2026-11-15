@@ -36,7 +36,7 @@ export function paintImage(context, pixels, size, noise, whiteLevel) {
   });
 }
 
-// Draw (image - reference). Grey = no change, white = got brighter, black = got fainter.
+// Draw (image - reference). Grey = no change, white = flux increase, black = flux decrease.
 export function paintDifference(context, pixels, reference, size, noise, whiteLevel) {
   const full = compress((whiteLevel / 4) * noise, noise);
   paint(context, size, (i) => {
