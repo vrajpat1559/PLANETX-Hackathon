@@ -45,12 +45,16 @@ SPHEREX_COLLECTIONS = [
 IRSA_SPHEREX_PREFIX = IRSA_DATA_PREFIXES[0]
 S3_SPHEREX_PREFIX = "https://nasa-irsa-spherex.s3.amazonaws.com/"
 USE_S3 = os.environ.get("USE_S3", "1") != "0"
+# The NEOWISE exposures (WISE history, 2014-2024) are on S3 too, with an extra
+# "images/" folder level. (The single 2010 AllWISE image still comes from IRSA.)
+IRSA_NEOWISE_PREFIX = IRSA_DATA_PREFIXES[1] + "neowiser/p1bm_frm/"
+S3_NEOWISE_PREFIX = "https://nasa-irsa-wise.s3.amazonaws.com/wise/neowiser/images/p1bm_frm/"
 
 # WISE, the older telescope used for the 2010-2024 history (see wise.py).
 WISE_2010_COLLECTION = "wise_allwise"   # one deep image of the sky as it was in 2010
 NEOWISE_COLLECTION = "neowiser"         # single exposures, every six months 2014-2024
 WISE_SEARCH_CACHE_HOURS = 24 * 365      # the WISE mission has ended; its list never changes
-WISE_MAX_EXPOSURES_PER_VISIT = 16
+WISE_MAX_EXPOSURES_PER_VISIT = 8      # evenly spaced through the visit; enough for a clean image
 
 # IRSA answers "502" when hit with too many requests at once.
 MAX_ARCHIVE_CONNECTIONS = 4

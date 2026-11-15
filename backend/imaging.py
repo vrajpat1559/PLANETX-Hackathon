@@ -86,13 +86,16 @@ def align_exposure(image_url: str, ra: float, dec: float, fov_deg: float) -> dic
 def _read_cutout(image_url: str, ra: float, dec: float, width_deg: float) -> dict:
     """The region around (ra, dec) of one exposure, before alignment.
 
-    SPHEREx is read from Amazon S3 when possible (about 1-2 s); WISE, and any
-    SPHEREx file S3 cannot serve, go through IRSA's cutout service (about 10 s).
+    SPHEREx and the NEOWISE (WISE 2014-2024) exposures are read from Amazon S3
+    when possible (1-2 s). The 2010 WISE image, and anything S3 cannot serve,
+    go through IRSA's cutout service (about 10 s).
     """
     is_spherex = image_url.startswith(config.IRSA_SPHEREX_PREFIX)
-    if is_spherex and config.USE_S3:
+    if config.USE_S3 and (is_spherex or s3.is_wise_exposure(image_url)):
         try:
-            return s3.read_cutout(image_url, ra, dec, width_deg)
+            if is_spherex:
+                return s3.read_cutout(image_url, ra, dec, width_deg)
+            return wise.read_cutout(s3.read_wise_cutout(image_url, ra, dec, width_deg))
         except s3.NoOverlap:
             raise
         except Exception as error:  # any S3 or parsing problem: use IRSA instead
