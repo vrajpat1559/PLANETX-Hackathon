@@ -12,6 +12,7 @@ This file only defines the web addresses (routes). The real work lives in:
 Run from the repo root:   uvicorn backend.main:app --reload
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import numpy as np
@@ -20,15 +21,22 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import archive, config, imaging, s3, spherex, targets, wise
-from .visits import describe_visit, group_into_visits
+from . import archive, cache, config, imaging, s3, spherex, targets, wise
+from .visits import describe_visit, group_into_visits, spread_out
 
 # astropy prints a long "Inconsistent SIP distortion" notice for every SPHEREx
 # file (the files use distortion terms without labelling them in CTYPE; astropy
 # applies them correctly anyway). Hide INFO-level notices so the log stays readable.
 astropy_log.setLevel("WARNING")
 
-app = FastAPI(title="SPHEREx Blink")
+
+@asynccontextmanager
+async def lifespan(app):
+    cache.trim()  # start under the size limit, whatever was left from last time
+    yield
+
+
+app = FastAPI(title="SPHEREx Blink", lifespan=lifespan)
 
 # The same three query parameters describe "which patch of sky" everywhere.
 RaParam = Query(ge=0, le=360, description="Right ascension, degrees")
@@ -149,6 +157,7 @@ def stack(
     urls = [e["url"] for e in visits[visit] if e["detector"] == detector]
     if not urls:
         raise HTTPException(404, f"No {detector} exposures in this visit")
+    urls = spread_out(urls, config.SPHEREX_MAX_EXPOSURES_PER_VISIT)
 
     result = imaging.stack_exposures(urls, ra, dec, fov)
     return _image_response(result["image"], {"X-Exposures-Used": result["used"]})

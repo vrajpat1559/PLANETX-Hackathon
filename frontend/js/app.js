@@ -9,7 +9,7 @@
 
 import { api } from "./api.js";
 import { average, noiseLevel, paintDifference, paintHighlights, paintImage } from "./picture.js";
-import { drawBackground } from "./solarsystem.js"; // or "./pixelplanet.js", "./nightsky.js", "./spacecraft.js", "./blackhole.js"
+import { drawBackground } from "./solarsystem.js";
 import { drawTimeline, markCurrent } from "./timeline.js";
 import { initSkyView, layoutSky, resetSkyView, zoomBy, ZOOM_BUTTON_STEP } from "./skyview.js";
 import { drawSky, setSmooth } from "./render.js";
@@ -44,6 +44,7 @@ const state = {
   current: 0,         // index of the frame on screen
   noise: null,        // sky noise of the first frame; every frame is drawn against it
   timer: null,        // play interval
+  lookupId: 0,        // goes up on every search, so a slow old name lookup cannot win
   loadId: 0,          // goes up on every reload so slow old loads are ignored
   loader: null,       // the load in progress: { loadId, queue, total, finished, running, limit }
 };
@@ -61,7 +62,10 @@ async function go(text) {
   stop();
   try {
     setStatus("Looking up the target…");
-    await openTarget(await api.resolve(text));
+    const request = ++state.lookupId;
+    const target = await api.resolve(text);
+    if (request !== state.lookupId) return;  // a newer search has started since
+    await openTarget(target);
   } catch (error) {
     setStatus(`Could not load that target: ${error.message}`, true);
   }
@@ -242,6 +246,7 @@ async function loadWorker(loader) {
       frame.pixels = image.pixels;
       frame.size = image.size;
       if (image.wavelength) frame.detail = `${image.wavelength.toFixed(2)} µm at the target`;
+      if (image.exposuresUsed > 1) frame.detail = `${image.exposuresUsed} exposures combined`;
       frame.status = "ready";
       state.noise ??= noiseLevel(image.pixels);
     } catch {
