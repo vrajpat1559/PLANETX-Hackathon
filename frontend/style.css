@@ -253,7 +253,6 @@ body:not(.has-target) .bottom, body:not(.has-target) .info-left { display: none;
 .player #play { min-width: 86px; }
 .toggle { padding: 0 16px; color: var(--dim); }
 .toggle[aria-pressed="true"] { color: #04140a; background: var(--brighter); border-color: var(--brighter); }
-.toggle.deep[aria-pressed="true"] { color: #03121c; background: var(--accent); border-color: var(--accent); }
 
 /* The filmstrip: one thumbnail per image, oldest first, centred when there is
    room and scrolling sideways when there are many. */

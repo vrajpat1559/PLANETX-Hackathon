@@ -8,7 +8,7 @@
 // display, playing, address bar, wiring.
 
 import { api } from "./api.js";
-import { average, noiseLevel, paintDifference, paintHighlights, paintImage } from "./picture.js";
+import { noiseLevel, paintDifference, paintHighlights, paintImage } from "./picture.js";
 import { drawBackground } from "./solarsystem.js";
 import { drawTimeline, markCurrent } from "./timeline.js";
 import { initSkyView, layoutSky, resetSkyView, zoomBy, ZOOM_BUTTON_STEP } from "./skyview.js";
@@ -331,16 +331,7 @@ function show(index) {
   const viewMode = $("view-mode").value;
   let caption;
 
-  // Deep image: average every loaded image from the same telescope. Random
-  // noise cancels out (by about the square root of the number of images), so
-  // faint stars and galaxies stand out. Mixing telescopes would blur it, since
-  // WISE and SPHEREx differ in sharpness and colour.
-  const sameTelescope = ready.filter((f) => f.telescope === frame.telescope && f.size === frame.size);
-  if (viewMode === "sum" && sameTelescope.length > 1) {
-    paintImage(context, average(sameTelescope.map((f) => f.pixels)), frame.size, state.noise, whiteLevel());
-    const name = frame.telescope === "wise" ? "WISE" : "SPHEREx";
-    caption = `Deep image · ${sameTelescope.length} ${name} images combined`;
-  } else if (viewMode === "difference" && frame !== first) {
+  if (viewMode === "difference" && frame !== first) {
     paintDifference(context, frame.pixels, first.pixels, frame.size, state.noise, whiteLevel());
     caption = `${frame.label} minus ${first.label}`;
   } else if (viewMode === "highlight" && frame !== first) {
@@ -577,11 +568,6 @@ async function start() {
     syncHighlightButton();
     show(state.current);
   });
-  $("deep-toggle").addEventListener("click", () => {
-    $("view-mode").value = $("view-mode").value === "sum" ? "image" : "sum";
-    syncHighlightButton();
-    show(state.current);
-  });
   $("view-mode").addEventListener("input", syncHighlightButton);
 
   readAddressBar();
@@ -611,10 +597,9 @@ function setDrawer(open) {
   (open ? $("detector") : $("settings-toggle")).focus({ preventScroll: true });
 }
 
-// The Deep and Highlight buttons are shortcuts for the View setting; keep them in step with it.
+// The Highlight button is a shortcut for the View setting; keep it in step with it.
 function syncHighlightButton() {
   $("highlight-toggle").setAttribute("aria-pressed", String($("view-mode").value === "highlight"));
-  $("deep-toggle").setAttribute("aria-pressed", String($("view-mode").value === "sum"));
   document.body.dataset.view = $("view-mode").value;  // lets the key brighten the Highlight colours
 }
 

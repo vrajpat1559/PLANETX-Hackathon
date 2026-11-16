@@ -128,21 +128,6 @@ export function paintHighlights(context, pixels, previous, size, noise, whiteLev
   return spots;
 }
 
-// Average several images pixel by pixel, skipping missing values.
-export function average(images) {
-  const length = images[0].length;
-  const result = new Float32Array(length);
-  for (let i = 0; i < length; i++) {
-    let total = 0;
-    let count = 0;
-    for (const image of images) {
-      if (Number.isFinite(image[i])) { total += image[i]; count++; }
-    }
-    result[i] = count ? total / count : NaN;
-  }
-  return result;
-}
-
 // Shared drawing loop: `shadeOf(i)` returns 0 (black) to 1 (white), or null for missing.
 function paint(context, size, shadeOf) {
   context.canvas.width = size;
