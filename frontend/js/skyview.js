@@ -7,7 +7,6 @@
 //   the + and - buttons           zoom around the middle of the screen
 //   drag                          move around
 //   double-click                  back to the starting view
-// Plain scrolling is left alone, so the page can scroll down to the overview.
 // The crosshair follows the target (the centre of the image), and `onChange`
 // lets the page redraw anything that depends on the zoom, such as the scale bar.
 
