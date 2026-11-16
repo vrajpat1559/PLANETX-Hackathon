@@ -2,6 +2,9 @@
 //
 // The picture is square but screens are wide, so it is scaled to *cover* the
 // first screen (full width, top and bottom cropped), like a background photo.
+// The top bar and the player float over it, so the target is centred in the
+// open area between them, and dragging can bring any part of the picture into
+// that open area (the edge may slide under the bars, showing black behind them).
 // On top of that the visitor can zoom and pan:
 //   Ctrl/Cmd + scroll, or pinch   zoom in or out, toward the point under the cursor
 //   the + and - buttons           zoom around the middle of the screen
@@ -18,7 +21,10 @@ const stage = document.getElementById("stage");
 const view = document.getElementById("sky"); // the display canvas (js/render.js)
 const reticle = document.getElementById("crosshair");
 
-let zoom = 1, panX = 0, panY = 0;  // pan: how far the image centre is from the stage centre, in pixels
+const topBar = document.querySelector(".topbar");
+const bottomBar = document.querySelector(".bottom"); // the caption and the player
+
+let zoom = 1, panX = 0, panY = 0;  // pan: how far the image centre is from the open area's centre, in pixels
 let onChange = () => {};
 
 export function initSkyView(changed) {
@@ -43,29 +49,46 @@ export function resetSkyView() {
   layoutSky();
 }
 
-// Zoom around the middle of the screen (the + and - buttons).
+// Zoom around the middle of the open area (the + and - buttons).
 export function zoomBy(factor) {
   const box = stage.getBoundingClientRect();
-  zoomAt(box.left + box.width / 2, box.top + box.height / 2, factor);
+  const open = openArea();
+  zoomAt(box.left + box.width / 2, box.top + (open.top + open.bottom) / 2, factor);
+}
+
+// The part of the stage not covered by the top bar or the player, as
+// { top, bottom } in pixels from the top of the stage. Before a target is
+// picked the player is hidden, so it falls back to the whole stage.
+function openArea() {
+  const stageBox = stage.getBoundingClientRect();
+  const top = topBar.getBoundingClientRect().bottom - stageBox.top;
+  const bottomBox = bottomBar.getBoundingClientRect();
+  const bottom = bottomBox.height ? bottomBox.top - stageBox.top : stageBox.height;
+  if (!(bottom - top > 100)) return { top: 0, bottom: stageBox.height }; // squeezed: use it all
+  return { top, bottom };
 }
 
 // Size and place the picture for the current zoom and pan. Call after the
 // picture changes size, and whenever the window does.
 export function layoutSky() {
   if (!view.width) return;
-  const stageWidth = stage.clientWidth, stageHeight = stage.clientHeight;
+  const stageWidth = stage.clientWidth;
+  const open = openArea();
+  const centreY = (open.top + open.bottom) / 2, openHeight = open.bottom - open.top;
   const scale = coverScale() * zoom;
   const width = view.width * scale, height = view.height * scale;
-  // Never pan so far that the picture's edge comes into view.
-  const maxX = Math.max(0, (width - stageWidth) / 2), maxY = Math.max(0, (height - stageHeight) / 2);
+  // Sideways: never so far that the picture's edge comes into view.
+  // Up and down: far enough that the top edge can reach the top bar and the
+  // bottom edge the player, so every part of the picture can be seen.
+  const maxX = Math.max(0, (width - stageWidth) / 2), maxY = Math.max(0, (height - openHeight) / 2);
   panX = Math.max(-maxX, Math.min(maxX, panX));
   panY = Math.max(-maxY, Math.min(maxY, panY));
 
   view.style.width = `${width}px`;
   view.style.height = `${height}px`;
-  view.style.transform = `translate(${(stageWidth - width) / 2 + panX}px, ${(stageHeight - height) / 2 + panY}px)`;
+  view.style.transform = `translate(${(stageWidth - width) / 2 + panX}px, ${centreY - height / 2 + panY}px)`;
   reticle.style.left = `${stageWidth / 2 + panX}px`;
-  reticle.style.top = `${stageHeight / 2 + panY}px`;
+  reticle.style.top = `${centreY + panY}px`;
   onChange();
 }
 
@@ -79,10 +102,11 @@ function zoomAt(x, y, factor) {
   const newZoom = Math.max(1, Math.min(MAX_ZOOM, zoom * factor));
   const actual = newZoom / zoom;
   const box = stage.getBoundingClientRect();
+  const open = openArea();
   // The point sits `d` from the image centre; after zooming it will sit
   // `d * actual` from it, so move the centre to keep the point still.
   const dx = x - (box.left + box.width / 2 + panX);
-  const dy = y - (box.top + box.height / 2 + panY);
+  const dy = y - (box.top + (open.top + open.bottom) / 2 + panY);
   panX += dx * (1 - actual);
   panY += dy * (1 - actual);
   zoom = newZoom;

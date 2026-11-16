@@ -247,13 +247,26 @@ body:not(.has-target) .bottom, body:not(.has-target) .info-left { display: none;
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px; border-radius: 22px;
 }
+/* While playing, the player and the hint fade away until the mouse moves
+   (js/app.js). With Highlight on, its colour key stays, floating on the sky. */
+.player {
+  transition: background-color 0.6s, border-color 0.6s, backdrop-filter 0.6s, -webkit-backdrop-filter 0.6s;
+}
+.player > *, .legend > *, .keys { transition: opacity 0.6s, border-color 0.6s; }
+.player-asleep .player {
+  background-color: transparent; border-color: transparent;
+  backdrop-filter: blur(0) saturate(1); -webkit-backdrop-filter: blur(0) saturate(1);
+}
+.player-asleep .player > :not(.legend), .player-asleep .legend > *, .player-asleep .keys { opacity: 0; }
+.player-asleep .legend { border-color: transparent; }
+[data-view="highlight"].player-asleep .legend > .change-key { opacity: 1; text-shadow: var(--shadow-text); }
+.player-asleep #stage { cursor: none; }
 .player > button { height: 40px; border-radius: 999px; }
 .player .round { width: 40px; padding: 0; display: grid; place-items: center; border-color: transparent; }
 .player .round svg { width: 18px; height: 18px; fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .player #play { min-width: 86px; }
 .toggle { padding: 0 16px; color: var(--dim); }
 .toggle[aria-pressed="true"] { color: #04140a; background: var(--brighter); border-color: var(--brighter); }
-.toggle.deep[aria-pressed="true"] { color: #03121c; background: var(--accent); border-color: var(--accent); }
 
 /* The filmstrip: one thumbnail per image, oldest first, centred when there is
    room and scrolling sideways when there are many. */
