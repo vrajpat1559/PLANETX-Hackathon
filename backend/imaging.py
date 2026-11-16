@@ -34,6 +34,11 @@ _build_slots = threading.BoundedSemaphore(config.STACKS_AT_ONCE) if config.STACK
 log = logging.getLogger("uvicorn.error")
 
 
+class Abandoned(Exception):
+    """The visitor who asked for this image has gone (picked another target,
+    or closed the page), so building it would only delay everyone else."""
+
+
 def sky_grid(ra: float, dec: float, fov_deg: float) -> tuple[WCS, int]:
     """The shared north-up grid for a target: its coordinate system and width in pixels."""
     pixel_deg = config.OUTPUT_PIXEL_ARCSEC / 3600
@@ -130,12 +135,17 @@ def _read_cutout(image_url: str, ra: float, dec: float, width_deg: float) -> dic
         return wise.read_cutout(hdul)
 
 
-def stack_exposures(image_urls: list[str], ra: float, dec: float, fov_deg: float) -> dict:
+def stack_exposures(
+    image_urls: list[str], ra: float, dec: float, fov_deg: float, stop: threading.Event | None = None
+) -> dict:
     """Combine many exposures into one image by taking the median at each pixel.
 
     The median ignores one-off glitches (cosmic rays, bad pixels) and beats down
     noise, so faint objects appear that no single exposure shows.
     Returns {"image", "used"} where `used` is how many exposures went in.
+
+    `stop` is set when the visitor has gone; the build is then dropped
+    (raising Abandoned) instead of finished for nobody.
     """
     key = f"{ra:.5f}:{dec:.5f}:{fov_deg:.3f}:{config.OUTPUT_PIXEL_ARCSEC}:" + ",".join(sorted(image_urls))
     path = cache_file("stacks", key, "npz")
@@ -145,9 +155,9 @@ def stack_exposures(image_urls: list[str], ra: float, dec: float, fov_deg: float
             return {"image": saved["image"], "used": int(saved["used"])}
         if _build_slots:
             with _build_slots:
-                result, complete = _stack_exposures(image_urls, ra, dec, fov_deg)
+                result, complete = _stack_exposures(image_urls, ra, dec, fov_deg, stop)
         else:
-            result, complete = _stack_exposures(image_urls, ra, dec, fov_deg)
+            result, complete = _stack_exposures(image_urls, ra, dec, fov_deg, stop)
         # Only remember the stack if every download worked, so a temporary
         # archive hiccup is retried next time.
         if complete:
@@ -155,19 +165,30 @@ def stack_exposures(image_urls: list[str], ra: float, dec: float, fov_deg: float
         return result
 
 
-def _stack_exposures(image_urls: list[str], ra: float, dec: float, fov_deg: float) -> tuple[dict, bool]:
+def _stack_exposures(
+    image_urls: list[str], ra: float, dec: float, fov_deg: float, stop: threading.Event | None
+) -> tuple[dict, bool]:
     """The work behind stack_exposures(), without the cache.
 
     Returns the result and whether every exposure could be downloaded.
     """
+    gone = lambda: stop is not None and stop.is_set()
+
     def try_align(url: str):
+        if gone():
+            return None  # skip the download: nobody is waiting for it
         try:
             return align_exposure(url, ra, dec, fov_deg)["image"]
         except archive.ArchiveError:
             return None  # one lost exposure should not sink the whole stack
 
+    # Checked here too: this point may come after a long wait for a build slot.
+    if gone():
+        raise Abandoned()
     with ThreadPoolExecutor(config.STACK_WORKERS) as pool:
         results = list(pool.map(try_align, image_urls))
+    if gone():
+        raise Abandoned()  # and the half-built stack is not saved
     downloaded = [image for image in results if image is not None]
     # An exposure can touch the search circle yet miss the picture entirely.
     images = [image for image in downloaded if np.isfinite(image).any()]

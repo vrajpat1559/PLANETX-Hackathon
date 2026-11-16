@@ -1,7 +1,7 @@
 // Every call to our backend lives here.
 
-async function request(url) {
-  const response = await fetch(url);
+async function request(url, signal) {
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     let reason = response.statusText;
     try { reason = (await response.json()).detail || reason; } catch {}
@@ -14,10 +14,15 @@ async function getJSON(url) {
   return (await request(url)).json();
 }
 
+// Every image request shares one "cancel" switch. cancelImages() flips it, so
+// requests for a view the visitor has left are dropped, and the server stops
+// building those images instead of finishing them for nobody.
+let images = new AbortController();
+
 // Images arrive as raw 32-bit brightness values, top row first.
 // Returns { size, pixels, wavelength, exposuresUsed }.
 async function getImage(url) {
-  const response = await request(url);
+  const response = await request(url, images.signal);
   const pixels = new Float32Array(await response.arrayBuffer());
   return {
     size: Number(response.headers.get("X-Image-Size")),
@@ -32,6 +37,12 @@ function query(parameters) {
 }
 
 export const api = {
+  // Drop every image request still waiting (a new target, band or setting).
+  cancelImages: () => {
+    images.abort();
+    images = new AbortController();
+  },
+
   config: () => getJSON("/api/config"),
 
   // How current NASA's SPHEREx archive is -> { newest_week, uploaded, ... }

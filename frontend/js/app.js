@@ -81,6 +81,7 @@ async function openTarget(target) {
   // Clear the previous target's images and caption, and stop any of its
   // downloads that are still running, so nothing stale shows while searching.
   state.loadId++;
+  api.cancelImages();
   state.frames = [];
   drawTimeline(state.frames, 0, pick);
   $("stamp").hidden = true;
@@ -118,7 +119,8 @@ async function openTarget(target) {
 function goHome() {
   stop();
   state.lookupId++;            // a name lookup still running is ignored
-  state.loadId++;              // so are image downloads still running
+  state.loadId++;              // so are image downloads still running,
+  api.cancelImages();          // which are also cancelled on the server
   state.target = null;         // and openTarget() stops when it sees this
   state.visits = [];
   state.exposures = [];        // settings changes now have nothing to reload
@@ -214,6 +216,7 @@ function spreadOut(list, limit) {
 
 function load() {
   stop();
+  api.cancelImages();  // images for the previous settings are no longer wanted
   const loadId = ++state.loadId;
   const detector = $("detector").value;
   const byVisit = $("mode").value === "visits";
