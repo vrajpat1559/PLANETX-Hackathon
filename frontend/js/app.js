@@ -81,6 +81,7 @@ async function openTarget(target) {
   // Clear the previous target's images and caption, and stop any of its
   // downloads that are still running, so nothing stale shows while searching.
   state.loadId++;
+  api.cancelImages();
   state.frames = [];
   drawTimeline(state.frames, 0, pick);
   $("stamp").hidden = true;
@@ -111,6 +112,33 @@ async function openTarget(target) {
   if (state.target !== target) return;
   state.wiseVisits = wiseVisits;
   addHistory();
+}
+
+// The logo was clicked: forget the target and go back to the landing scene.
+// Settings (band, field, WISE on/off) stay as they are.
+function goHome() {
+  stop();
+  state.lookupId++;            // a name lookup still running is ignored
+  state.loadId++;              // so are image downloads still running,
+  api.cancelImages();          // which are also cancelled on the server
+  state.target = null;         // and openTarget() stops when it sees this
+  state.visits = [];
+  state.exposures = [];        // settings changes now have nothing to reload
+  state.wiseVisits = [];
+  state.frames = [];
+  drawTimeline(state.frames, 0, pick);
+  document.body.classList.remove("has-image", "has-target");
+  resetSkyView();
+  for (const id of ["stamp", "badge", "compass", "crosshair", "scale", "note"]) $(id).hidden = true;
+  $("empty").hidden = false;
+  $("target").value = "";
+  setStatus("Pick a target to begin.");
+
+  // Drop the target from the address, keep the settings.
+  const parameters = new URLSearchParams(location.search);
+  for (const key of ["ra", "dec", "name", "target"]) parameters.delete(key);
+  const query = parameters.toString();
+  history.replaceState(null, "", query ? `?${query}` : location.pathname);
 }
 
 // ---------- building the list of frames ----------
@@ -188,6 +216,7 @@ function spreadOut(list, limit) {
 
 function load() {
   stop();
+  api.cancelImages();  // images for the previous settings are no longer wanted
   const loadId = ++state.loadId;
   const detector = $("detector").value;
   const byVisit = $("mode").value === "visits";
@@ -287,8 +316,10 @@ function afterFrameArrives() {
 
 // ---------- display ----------
 
-// Brightness slider (0-100) -> how many times the sky noise is drawn as white (10 to 10,000).
-const whiteLevel = () => 10 ** (1 + (3 * $("brightness").value) / 100);
+// Brightness slider (0-100) -> how many times the sky noise is drawn as white.
+// A lower white level makes more of the picture white, so it looks brighter:
+// left (0) = 10,000 (dim), middle = about 316, right (100) = 10 (bright).
+const whiteLevel = () => 10 ** (4 - (3 * $("brightness").value) / 100);
 
 function show(index) {
   const frame = state.frames[index];
@@ -480,6 +511,10 @@ async function start() {
   });
   $("presets").append(surprise);
 
+  $("home").addEventListener("click", (event) => {
+    event.preventDefault();   // reset in place instead of reloading the page
+    goHome();
+  });
   $("search").addEventListener("submit", (event) => {
     event.preventDefault();
     if ($("target").value.trim()) go($("target").value);

@@ -12,12 +12,15 @@ This file only defines the web addresses (routes). The real work lives in:
 Run from the repo root:   uvicorn backend.main:app --reload
 """
 
+import asyncio
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import numpy as np
 from astropy import log as astropy_log
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -49,19 +52,36 @@ FovParam = Query(
 )
 
 
-@app.middleware("http")
-async def always_fresh_page_files(request, call_next):
+class AlwaysFreshPageFiles:
     """Make browsers check for a newer index.html / JS / CSS on every load.
 
     Without this, a browser may keep running an old copy of the page code after
     it has been edited. "no-cache" still lets the browser keep a copy; it just
     asks first, and an unchanged file costs a tiny "304 Not Modified" reply.
     Images from /api/ keep their own long cache time.
+
+    Written as plain ASGI (it only edits the response headers on their way
+    out) rather than with @app.middleware("http"): that style hides a
+    visitor's disconnect from the routes, which unless_abandoned() relies on.
     """
-    response = await call_next(request)
-    if not request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-cache"
-    return response
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"].startswith("/api/"):
+            return await self.app(scope, receive, send)
+
+        async def send_fresh(message):
+            if message["type"] == "http.response.start":
+                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"cache-control"]
+                message["headers"] = headers + [(b"cache-control", b"no-cache")]
+            await send(message)
+
+        await self.app(scope, receive, send_fresh)
+
+
+app.add_middleware(AlwaysFreshPageFiles)
 
 
 @app.exception_handler(archive.ArchiveError)
@@ -142,8 +162,39 @@ def _iso(unix_time: float) -> str:
     return datetime.fromtimestamp(unix_time, timezone.utc).isoformat(timespec="seconds")
 
 
+async def unless_abandoned(request: Request, build, *args):
+    """Run a slow image build in a worker thread, and stop it if the visitor leaves.
+
+    Building a stack takes seconds to minutes. When a visitor switches target
+    the browser cancels its pending image requests; without this check the
+    server would still finish every one of them, and with one build at a time
+    (the free hosting plan) everyone else would wait behind work nobody wants.
+    A watcher checks the connection twice a second and raises a flag that the
+    build looks at between downloads.
+    """
+    stop = threading.Event()
+
+    async def watch():
+        while not stop.is_set():
+            if await request.is_disconnected():
+                stop.set()
+                return
+            await asyncio.sleep(0.5)
+
+    watcher = asyncio.create_task(watch())
+    try:
+        return await run_in_threadpool(build, *args, stop)
+    except imaging.Abandoned:
+        imaging.log.info("Dropped %s: the visitor left before it was ready", request.url.path)
+        return Response(status_code=499)  # "client closed request": nobody reads this
+    finally:
+        stop.set()
+        watcher.cancel()
+
+
 @app.get("/api/stack")
-def stack(
+async def stack(
+    request: Request,
     visit: int = Query(ge=0),
     detector: str = Query(pattern="^D[1-6]$"),
     ra: float = RaParam,
@@ -151,6 +202,10 @@ def stack(
     fov: float = FovParam,
 ):
     """All exposures of one visit in one detector, combined into a single image."""
+    return await unless_abandoned(request, _stack, visit, detector, ra, dec, fov)
+
+
+def _stack(visit, detector, ra, dec, fov, stop):
     visits = group_into_visits(spherex.find_exposures(ra, dec))
     if visit >= len(visits):
         raise HTTPException(404, "No such visit")
@@ -159,7 +214,7 @@ def stack(
         raise HTTPException(404, f"No {detector} exposures in this visit")
     urls = spread_out(urls, config.SPHEREX_MAX_EXPOSURES_PER_VISIT)
 
-    result = imaging.stack_exposures(urls, ra, dec, fov)
+    result = imaging.stack_exposures(urls, ra, dec, fov, stop)
     return _image_response(result["image"], {"X-Exposures-Used": result["used"]})
 
 
@@ -192,7 +247,8 @@ def wise_visits(ra: float = RaParam, dec: float = DecParam):
 
 
 @app.get("/api/wise/stack")
-def wise_stack(
+async def wise_stack(
+    request: Request,
     visit: int = Query(ge=0),
     band: str = Query(pattern="^W[12]$"),
     ra: float = RaParam,
@@ -200,10 +256,14 @@ def wise_stack(
     fov: float = FovParam,
 ):
     """One WISE visit as a single image, on the same grid and units as SPHEREx."""
+    return await unless_abandoned(request, _wise_stack, visit, band, ra, dec, fov)
+
+
+def _wise_stack(visit, band, ra, dec, fov, stop):
     visits = wise.find_visits(ra, dec)
     if visit >= len(visits) or not visits[visit]["urls"].get(band):
         raise HTTPException(404, f"No {band} images for this WISE visit")
-    result = imaging.stack_exposures(visits[visit]["urls"][band], ra, dec, fov)
+    result = imaging.stack_exposures(visits[visit]["urls"][band], ra, dec, fov, stop)
     return _image_response(result["image"], {"X-Exposures-Used": result["used"]})
 
 
