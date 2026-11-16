@@ -1,0 +1,21 @@
+# Hosting on Render (https://render.com): one web service runs the FastAPI
+# backend, which also serves the page. Render rebuilds and redeploys it
+# automatically every time `main` changes on GitHub.
+#
+# Set up once: render.com -> New -> Blueprint -> pick this repository.
+services:
+  - type: web
+    name: spherex-blink
+    runtime: python
+    plan: free
+    branch: main
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.1
+      # The free plan's disk is small and wiped on each deploy; keep the cache modest.
+      - key: CACHE_MAX_MB
+        value: "400"
