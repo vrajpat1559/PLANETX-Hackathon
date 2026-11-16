@@ -103,8 +103,9 @@ function frame(seconds) {
     drawSparkle(c, s, moving ? seconds : 0, appear);
   }
 
-  // The planets, scrolled with the page (the stars are not).
-  const offset = -window.scrollY;
+  // The planets, scrolled with the page (the stars are not), and lifted out
+  // from behind the player while a target's images are loading.
+  const offset = -window.scrollY + planetLift(seconds, moving);
   if (offset > -height * PLANET_LAYER_SCREENS) {
     c.save();
     c.translate(0, offset);
@@ -139,6 +140,34 @@ function frame(seconds) {
     }
   }
   explosions = explosions.filter((boom) => !boom.done);
+}
+
+// ---------- making room for the player ----------
+// On the landing screen the planets sit along the bottom. Once a target is
+// picked, the player appears there while its images load, so the planets
+// glide up to the middle of the free space between the welcome text (or the
+// top bar) and the player, and glide back down on the way home.
+
+const LIFT_SPEED = 4;                       // how quickly the planets glide (per second)
+let lift = 0, lastSeconds = null;
+
+function planetLift(seconds, moving) {
+  const goal = liftGoal();
+  const step = moving && lastSeconds !== null ? Math.min(1, (seconds - lastSeconds) * LIFT_SPEED) : 1;
+  lastSeconds = seconds;
+  lift += (goal - lift) * step;
+  return lift;
+}
+
+// How far up (negative) the planet line should move: zero unless the player is showing.
+function liftGoal() {
+  if (!document.body.classList.contains("has-target")) return 0;
+  const player = document.querySelector(".bottom")?.getBoundingClientRect();
+  if (!player?.height) return 0;
+  const welcome = document.querySelector(".empty")?.getBoundingClientRect();
+  const above = welcome?.height ? welcome.bottom : document.querySelector(".topbar").getBoundingClientRect().bottom;
+  const line = (above + player.top) / 2;
+  return Math.min(0, line - height * LINE_HEIGHT);
 }
 
 // ---------- stars ----------
