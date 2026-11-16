@@ -78,6 +78,14 @@ async function openTarget(target) {
   document.body.classList.remove("has-image");
   document.body.classList.add("has-target");
   resetSkyView();
+  // Clear the previous target's images and caption, and stop any of its
+  // downloads that are still running, so nothing stale shows while searching.
+  state.loadId++;
+  state.frames = [];
+  drawTimeline(state.frames, 0, pick);
+  $("stamp").hidden = true;
+  $("badge").hidden = true;
+  $("compass").hidden = true;
   $("note").textContent = target.note || "";
   $("note").hidden = !target.note;
 
@@ -265,7 +273,8 @@ function reportProgress() {
   const { finished, total } = state.loader;
   setStatus(
     `${state.target.label}: loaded ${finished} of ${total} images.` +
-    (finished === total ? "" : " New images take a few seconds; older WISE images can take longer.")
+    (finished === total ? "" : " New images take a few seconds; older WISE images can take longer.") +
+    ($("history").value === "off" ? " WISE history is off: click WISE in the key to turn it on." : "")
   );
 }
 
@@ -475,6 +484,14 @@ async function start() {
     event.preventDefault();
     if ($("target").value.trim()) go($("target").value);
   });
+  // WISE in the key doubles as an on/off switch for the WISE history, so it
+  // can never be switched off without it showing.
+  $("wise-toggle").addEventListener("click", () => {
+    $("history").value = $("history").value === "off" ? "some" : "off";
+    syncWiseButton();
+    if (state.exposures.length) load();
+  });
+  $("history").addEventListener("change", syncWiseButton);
   for (const id of ["detector", "fov", "mode", "limit", "history"]) {
     $(id).addEventListener("change", () => { if (state.exposures.length) load(); });
   }
@@ -534,6 +551,13 @@ async function start() {
 
   readAddressBar();
   syncHighlightButton();
+  syncWiseButton();
+}
+
+function syncWiseButton() {
+  const on = $("history").value !== "off";
+  $("wise-toggle").setAttribute("aria-pressed", String(on));
+  $("wise-toggle").classList.toggle("off", !on);
 }
 
 function setAbout(open) {

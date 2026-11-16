@@ -50,11 +50,14 @@ body {
 /* The first screen: the sky image with the controls floating on it. It scrolls
    away like a hero image, with the overview below. */
 .screen { position: relative; z-index: 1; height: 100vh; min-height: 560px; overflow: hidden; }
-/* Fade the bottom of the first screen into black, so it flows into the overview. */
+/* With an image showing, fade its bottom into black so it flows into the
+   overview. (The landing scene needs no fade: it carries on behind the overview.) */
 .screen::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 140px; z-index: 0;
   background: linear-gradient(transparent, #000); pointer-events: none;
+  opacity: 0; transition: opacity 0.8s ease;
 }
+.has-image .screen::after { opacity: 1; }
 
 /* The telescope image, filling the first screen. js/skyview.js sizes and moves it. */
 .stage {
@@ -208,6 +211,16 @@ input[type="checkbox"] { accent-color: var(--ink); width: 16px; height: 16px; ma
 .key { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
 .key.spherex { background: var(--warm); }
 .key.wise { background: var(--cool); }
+/* WISE in the key is also the on/off switch for the WISE history. */
+.wise-toggle {
+  display: inline-flex; align-items: center; gap: 7px; padding: 0; border: 0; background: none;
+  color: inherit; font: inherit; cursor: pointer;
+}
+.wise-toggle:hover { color: var(--ink); }
+.wise-toggle .off-label { display: none; }
+.wise-toggle.off { color: var(--faint); }
+.wise-toggle.off .key { background: transparent; box-shadow: inset 0 0 0 1.5px var(--cool); }
+.wise-toggle.off .off-label { display: inline; }
 .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
 .swatch.brighter { background: var(--brighter); }
 .swatch.fainter { background: var(--fainter); }
