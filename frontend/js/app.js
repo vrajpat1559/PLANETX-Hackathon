@@ -399,12 +399,36 @@ function play() {
   const milliseconds = 1100 - $("speed").value * 100; // 1000 ms down to 100 ms per image
   state.timer = setInterval(() => step(1), milliseconds);
   $("play").textContent = "Pause";
+  document.body.classList.add("playing");
+  wakePlayer();
 }
 
 function stop() {
   clearInterval(state.timer);
   state.timer = null;
   $("play").textContent = "Play";
+  clearTimeout(playerNap);
+  document.body.classList.remove("playing", "player-asleep");
+}
+
+// While playing, the player (filmstrip and buttons) fades out after a moment
+// so the whole picture can be seen, like the controls on a video. Moving the
+// mouse, touching, or pressing a key brings it back; it stays while the
+// pointer is over it.
+const PLAYER_NAP_MS = 1500;
+let playerNap = null;
+
+function wakePlayer() {
+  document.body.classList.remove("player-asleep");
+  clearTimeout(playerNap);
+  if (!state.timer) return;
+  playerNap = setTimeout(() => {
+    if (document.querySelector(".player:hover")) wakePlayer();
+    else document.body.classList.add("player-asleep");
+  }, PLAYER_NAP_MS);
+}
+for (const type of ["pointermove", "pointerdown", "keydown"]) {
+  document.addEventListener(type, () => { if (state.timer) wakePlayer(); });
 }
 
 // ---------- address bar ----------
