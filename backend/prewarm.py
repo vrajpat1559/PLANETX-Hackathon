@@ -40,7 +40,11 @@ def spread_out(items: list, limit: int) -> list:
 
 def warm(server: str, name: str) -> None:
     session = requests.Session()
-    get = lambda path, **params: session.get(f"{server}{path}?{urlencode(params)}", timeout=900)
+    def get(path, **params):
+        response = session.get(f"{server}{path}?{urlencode(params)}", timeout=900)
+        if path != "/api/stack" and path != "/api/wise/stack":
+            response.raise_for_status()  # a failed search: say so, and move on to the next example
+        return response
     started = time.time()
     target = get("/api/resolve", q=name).json()
     ra, dec = target["ra"], target["dec"]
@@ -68,6 +72,8 @@ def main() -> None:
     for name in EXAMPLES:
         try:
             warm(server, name)
+        except requests.HTTPError as error:
+            print(f"  {name}: the archive search failed ({error.response.status_code}); run again to retry")
         except requests.RequestException as error:
             print(f"  {name}: could not reach the server ({type(error).__name__})")
 
