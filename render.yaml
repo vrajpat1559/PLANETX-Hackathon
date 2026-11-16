@@ -19,3 +19,13 @@ services:
       # The free plan's disk is small and wiped on each deploy; keep the cache modest.
       - key: CACHE_MAX_MB
         value: "400"
+      # The free plan has 512 MB of memory. Build one stack at a time, two
+      # exposures at a time (about 300 MB at peak), so the server is never
+      # stopped for using too much; extra requests just wait their turn.
+      - key: STACKS_AT_ONCE
+        value: "1"
+      - key: STACK_WORKERS
+        value: "2"
+      # Stops Linux giving each thread its own memory pool, which wastes memory.
+      - key: MALLOC_ARENA_MAX
+        value: "2"

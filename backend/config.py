@@ -69,7 +69,11 @@ WISE_MAX_EXPOSURES_PER_VISIT = 16
 MAX_ARCHIVE_CONNECTIONS = 4
 # Exposures aligned at the same time when building a stack. Higher than the
 # IRSA limit because S3 has no such limit; IRSA calls still queue at 4.
-STACK_WORKERS = 8
+STACK_WORKERS = int(os.environ.get("STACK_WORKERS", "8"))
+# How many stacks may be built at the same time (0 = no limit). Each build
+# holds its exposures in memory, so a small server (such as Render's free plan,
+# 512 MB) sets this to 1; other requests then wait their turn.
+STACKS_AT_ONCE = int(os.environ.get("STACKS_AT_ONCE", "0"))
 # How long a "which exposures cover this spot" answer is reused before we ask
 # IRSA again. Keeps the tool current as new data arrives.
 SEARCH_CACHE_HOURS = 6

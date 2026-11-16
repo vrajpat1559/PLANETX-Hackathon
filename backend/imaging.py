@@ -16,6 +16,7 @@ edge, so they can be drawn on screen as they are. Missing pixels are NaN.
 
 import io
 import logging
+import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 
@@ -26,6 +27,9 @@ from reproject import reproject_interp
 
 from . import archive, config, s3, spherex, wise
 from .cache import cache_file, load_arrays, only_one_builder, save_arrays
+
+# Limits how many stacks are built at once (config.STACKS_AT_ONCE; 0 = no limit).
+_build_slots = threading.BoundedSemaphore(config.STACKS_AT_ONCE) if config.STACKS_AT_ONCE else None
 
 log = logging.getLogger("uvicorn.error")
 
@@ -139,7 +143,11 @@ def stack_exposures(image_urls: list[str], ra: float, dec: float, fov_deg: float
         saved = load_arrays(path)
         if saved is not None:
             return {"image": saved["image"], "used": int(saved["used"])}
-        result, complete = _stack_exposures(image_urls, ra, dec, fov_deg)
+        if _build_slots:
+            with _build_slots:
+                result, complete = _stack_exposures(image_urls, ra, dec, fov_deg)
+        else:
+            result, complete = _stack_exposures(image_urls, ra, dec, fov_deg)
         # Only remember the stack if every download worked, so a temporary
         # archive hiccup is retried next time.
         if complete:
