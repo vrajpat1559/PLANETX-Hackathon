@@ -89,6 +89,8 @@ body {
     0 0 14px rgba(56, 182, 255, 0.3),
     0 0 32px rgba(56, 182, 255, 0.16);
 }
+/* The logo is also the "back to the start" link: it keeps the logo's look. */
+.logo a { color: inherit; text-decoration: none; }
 /* A slow, gentle "breathing" of the glow. */
 @keyframes logo-glow {
   50% { filter: brightness(1.04) drop-shadow(0 0 8px rgba(120, 190, 255, 0.12)); }

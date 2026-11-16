@@ -113,6 +113,32 @@ async function openTarget(target) {
   addHistory();
 }
 
+// The logo was clicked: forget the target and go back to the landing scene.
+// Settings (band, field, WISE on/off) stay as they are.
+function goHome() {
+  stop();
+  state.lookupId++;            // a name lookup still running is ignored
+  state.loadId++;              // so are image downloads still running
+  state.target = null;         // and openTarget() stops when it sees this
+  state.visits = [];
+  state.exposures = [];        // settings changes now have nothing to reload
+  state.wiseVisits = [];
+  state.frames = [];
+  drawTimeline(state.frames, 0, pick);
+  document.body.classList.remove("has-image", "has-target");
+  resetSkyView();
+  for (const id of ["stamp", "badge", "compass", "crosshair", "scale", "note"]) $(id).hidden = true;
+  $("empty").hidden = false;
+  $("target").value = "";
+  setStatus("Pick a target to begin.");
+
+  // Drop the target from the address, keep the settings.
+  const parameters = new URLSearchParams(location.search);
+  for (const key of ["ra", "dec", "name", "target"]) parameters.delete(key);
+  const query = parameters.toString();
+  history.replaceState(null, "", query ? `?${query}` : location.pathname);
+}
+
 // ---------- building the list of frames ----------
 
 // One frame per SPHEREx visit: all its exposures in the chosen band, combined.
@@ -480,6 +506,10 @@ async function start() {
   });
   $("presets").append(surprise);
 
+  $("home").addEventListener("click", (event) => {
+    event.preventDefault();   // reset in place instead of reloading the page
+    goHome();
+  });
   $("search").addEventListener("submit", (event) => {
     event.preventDefault();
     if ($("target").value.trim()) go($("target").value);
