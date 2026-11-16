@@ -313,8 +313,10 @@ function afterFrameArrives() {
 
 // ---------- display ----------
 
-// Brightness slider (0-100) -> how many times the sky noise is drawn as white (10 to 10,000).
-const whiteLevel = () => 10 ** (1 + (3 * $("brightness").value) / 100);
+// Brightness slider (0-100) -> how many times the sky noise is drawn as white.
+// A lower white level makes more of the picture white, so it looks brighter:
+// left (0) = 10,000 (dim), middle = about 316, right (100) = 10 (bright).
+const whiteLevel = () => 10 ** (4 - (3 * $("brightness").value) / 100);
 
 function show(index) {
   const frame = state.frames[index];
