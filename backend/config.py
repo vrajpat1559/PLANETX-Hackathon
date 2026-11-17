@@ -12,6 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = ROOT / "frontend"
 CACHE_DIR = ROOT / ".cache"
+# Finished pictures for the example targets, saved in the repository so they
+# are there the moment the server starts (see seed.py). The free hosting plan
+# wipes .cache/ on every restart, and it restarts whenever it has sat idle.
+SEED_DIR = ROOT / "backend" / "seed"
 # The most disk space the cache may use, in megabytes. When it goes over, the
 # files that have gone longest without being used are deleted (see cache.py).
 # 1000 MB holds the finished pictures for a few hundred targets.
