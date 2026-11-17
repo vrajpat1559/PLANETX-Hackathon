@@ -1,0 +1,32 @@
+{
+ "barnard's star": {
+  "ra": 269.4462685040411,
+  "dec": 4.768204482222222,
+  "label": "Barnard's Star",
+  "note": "This object moves 10.4 arcseconds per year, so the view is centred where it should be in 2026 (270 arcseconds from its year-2000 catalogue position)."
+ },
+ "eps ind b": {
+  "ra": 331.09664385375356,
+  "dec": -56.800660208888885,
+  "label": "eps Ind B",
+  "note": "This object moves 4.7 arcseconds per year, so the view is centred where it should be in 2026 (122 arcseconds from its year-2000 catalogue position)."
+ },
+ "wise j085510.83-071442.5": {
+  "ra": 133.75976461144327,
+  "dec": -7.242186,
+  "label": "WISE J085510.83-071442.5",
+  "note": "This object moves 8.2 arcseconds per year, so the view is centred where it should be in 2026 (212 arcseconds from its year-2000 catalogue position)."
+ },
+ "rw aur": {
+  "ra": 76.95652603,
+  "dec": 30.40143817,
+  "label": "RW Aur",
+  "note": ""
+ },
+ "r dra": {
+  "ra": 248.16761083,
+  "dec": 66.75497942,
+  "label": "R Dra",
+  "note": ""
+ }
+}

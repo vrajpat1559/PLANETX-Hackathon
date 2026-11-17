@@ -7,6 +7,7 @@ Accepts:
   "Barnard's Star"                     an object name (looked up at CDS)
 """
 
+import json
 import math
 import re
 
@@ -52,7 +53,22 @@ def resolve(text: str) -> dict:
             ) from None
         return {"ra": float(position.ra.deg), "dec": float(position.dec.deg), "label": text, "note": ""}
 
-    return _look_up_name(text)
+    return _saved_examples().get(text.lower()) or _look_up_name(text)
+
+
+def _saved_examples() -> dict:
+    """The example targets' positions, saved by seed.py, so the examples open
+    even when the name lookup service is down. {lower-case name: resolve() result}"""
+    global _examples
+    if _examples is None:
+        try:
+            _examples = json.loads((config.SEED_DIR / "targets.json").read_text())
+        except (OSError, ValueError):
+            _examples = {}
+    return _examples
+
+
+_examples = None
 
 
 def _look_up_name(name: str) -> dict:

@@ -15,6 +15,7 @@ Everything here is safe to delete at any time; it is rebuilt on demand.
 import hashlib
 import logging
 import os
+import shutil
 import threading
 import time
 import zipfile
@@ -39,7 +40,30 @@ def cache_file(kind: str, key: str, extension: str) -> Path:
     folder = config.CACHE_DIR / kind
     folder.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(key.encode()).hexdigest()[:20]
-    return folder / f"{digest}.{extension}"
+    path = folder / f"{digest}.{extension}"
+    _copy_from_seed(kind, path)
+    return path
+
+
+def _copy_from_seed(kind: str, path: Path) -> None:
+    """If the cache lacks this file but the repository's seed has it, copy it in.
+
+    The seed (config.SEED_DIR, made by seed.py) holds the example targets'
+    searches and finished pictures. Copying one in makes it an ordinary cache
+    file from then on: fresh as of now, counted against the size limit, and
+    copied in again if it is ever trimmed away.
+    """
+    if path.exists():
+        return
+    seed = config.SEED_DIR / kind / path.name
+    if not seed.exists():
+        return
+    temporary = _temporary_name(path)
+    try:
+        shutil.copyfile(seed, temporary)
+        os.replace(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)  # the cache is only a shortcut: build it the slow way
 
 
 def is_fresh(path: Path, max_age_hours: float) -> bool:
