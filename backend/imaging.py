@@ -25,7 +25,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from reproject import reproject_interp
 
-from . import archive, config, s3, spherex, wise
+from . import archive, config, memory, s3, spherex, wise
 from .cache import cache_file, load_arrays, only_one_builder, save_arrays
 
 # Limits how many stacks are built at once (config.STACKS_AT_ONCE; 0 = no limit).
@@ -135,6 +135,12 @@ def _read_cutout(image_url: str, ra: float, dec: float, width_deg: float) -> dic
         return wise.read_cutout(hdul)
 
 
+def stack_file(image_urls: list[str], ra: float, dec: float, fov_deg: float):
+    """Where the finished stack of these exposures is kept in the cache."""
+    key = f"{ra:.5f}:{dec:.5f}:{fov_deg:.3f}:{config.OUTPUT_PIXEL_ARCSEC}:" + ",".join(sorted(image_urls))
+    return cache_file("stacks", key, "npz")
+
+
 def stack_exposures(
     image_urls: list[str], ra: float, dec: float, fov_deg: float, stop: threading.Event | None = None
 ) -> dict:
@@ -147,17 +153,23 @@ def stack_exposures(
     `stop` is set when the visitor has gone; the build is then dropped
     (raising Abandoned) instead of finished for nobody.
     """
-    key = f"{ra:.5f}:{dec:.5f}:{fov_deg:.3f}:{config.OUTPUT_PIXEL_ARCSEC}:" + ",".join(sorted(image_urls))
-    path = cache_file("stacks", key, "npz")
+    path = stack_file(image_urls, ra, dec, fov_deg)
     with only_one_builder(path):
         saved = load_arrays(path)
         if saved is not None:
             return {"image": saved["image"], "used": int(saved["used"])}
-        if _build_slots:
-            with _build_slots:
+        try:
+            if _build_slots:
+                with _build_slots:
+                    result, complete = _stack_exposures(image_urls, ra, dec, fov_deg, stop)
+            else:
                 result, complete = _stack_exposures(image_urls, ra, dec, fov_deg, stop)
-        else:
-            result, complete = _stack_exposures(image_urls, ra, dec, fov_deg, stop)
+        finally:
+            # Finished, failed or abandoned: hand the working space back before the next build.
+            before = memory.used_mb()
+            memory.release()
+            log.info("Stack of %d exposures done; memory %.0f MB, %.0f MB after tidying",
+                     len(image_urls), before, memory.used_mb())
         # Only remember the stack if every download worked, so a temporary
         # archive hiccup is retried next time.
         if complete:

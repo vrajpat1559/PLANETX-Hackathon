@@ -9,7 +9,6 @@ Knowing what the rows mean for each telescope is left to spherex.py and wise.py.
 
 import csv
 import gzip
-import io
 import json
 import threading
 import time
@@ -33,15 +32,20 @@ _slots = threading.BoundedSemaphore(config.MAX_ARCHIVE_CONNECTIONS)
 _KEPT_COLUMNS = ["obs_id", "obs_collection", "energy_bandpassname", "dataproduct_subtype", "t_min", "s_ra", "s_dec", "access_url"]
 
 
-def _get(url: str, params: dict, timeout: int = 120, tries: int = 4) -> requests.Response:
-    """GET with retries, because IRSA occasionally answers 502 under load."""
+def _get(url: str, params: dict, timeout: int = 120, tries: int = 4, stream: bool = False) -> requests.Response:
+    """GET with retries, because IRSA occasionally answers 502 under load.
+
+    With `stream`, the answer's body is not downloaded here: the caller reads
+    it piece by piece, so a very long answer never sits in memory whole.
+    """
     problem = "no attempt made"
     for attempt in range(tries):
         try:
             with _slots:
-                response = _session.get(url, params=params, timeout=timeout)
+                response = _session.get(url, params=params, timeout=timeout, stream=stream)
             if response.status_code == 200:
                 return response
+            response.close()
             problem = f"HTTP {response.status_code}"
             if 400 <= response.status_code < 500:
                 break  # "no such file" or "bad request" will not get better by asking again
@@ -91,17 +95,26 @@ def _search_images(where, ra: float, dec: float, path) -> list[dict]:
                 "RESPONSEFORMAT": "csv",
                 "MAXREC": 20000,
             },
+            stream=True,
         )
-    except ArchiveError:
+        # A busy spot of sky has thousands of exposures and the answer runs to
+        # tens of megabytes (some 60 columns a row). Read it a line at a time
+        # and keep only the few columns we use; holding the whole answer while
+        # parsing it once cost over 100 MB, a fifth of the free plan's memory.
+        with response:
+            response.encoding = response.encoding or "utf-8"
+            rows = [
+                {column: row.get(column, "") for column in _KEPT_COLUMNS}
+                for row in csv.DictReader(response.iter_lines(decode_unicode=True))
+                if row.get("dataproduct_subtype") == "science"
+                and is_archive_image_url(row.get("access_url", ""))
+            ]
+    except (ArchiveError, requests.RequestException) as error:
         if path.exists():
             return json.loads(path.read_text())  # stale, but better than nothing
-        raise
-    rows = [
-        {column: row.get(column, "") for column in _KEPT_COLUMNS}
-        for row in csv.DictReader(io.StringIO(response.text))
-        if row.get("dataproduct_subtype") == "science"
-        and is_archive_image_url(row.get("access_url", ""))
-    ]
+        if isinstance(error, ArchiveError):
+            raise
+        raise ArchiveError(f"The image archive's answer was cut off ({type(error).__name__})")
     save_text(path, json.dumps(rows))
     return rows
 
